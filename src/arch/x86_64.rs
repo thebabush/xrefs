@@ -11,13 +11,13 @@
 //! This catches `mov rax, imm64; call rax` patterns.
 
 use super::{ScanRegion, SegmentDataIndex, SegmentIndex};
+use crate::loader::GotSlots;
 use crate::va::Va;
 use crate::xref::{Confidence, Xref, XrefKind};
 use iced_x86::{
     Code, Decoder, DecoderOptions, FlowControl, Instruction, InstructionInfoFactory, OpAccess,
     OpKind, Register,
 };
-use rustc_hash::FxHashSet;
 
 /// Tracks a register participating in a jump table dispatch.
 ///
@@ -64,10 +64,10 @@ enum PropMode {
 pub(crate) fn scan_linear(
     region: &ScanRegion,
     idx: &SegmentIndex,
-    got_slots: &FxHashSet<Va>,
+    got: GotSlots<'_>,
     data_idx: &SegmentDataIndex,
 ) -> Vec<Xref> {
-    scan_core(region, idx, got_slots, data_idx, PropMode::Off)
+    scan_core(region, idx, got, data_idx, PropMode::Off)
 }
 
 /// Depth 2: linear disassembly + register constant propagation + jump table
@@ -75,17 +75,17 @@ pub(crate) fn scan_linear(
 pub(crate) fn scan_with_prop(
     region: &ScanRegion,
     idx: &SegmentIndex,
-    got_slots: &FxHashSet<Va>,
+    got: GotSlots<'_>,
     data_idx: &SegmentDataIndex,
 ) -> Vec<Xref> {
-    scan_core(region, idx, got_slots, data_idx, PropMode::On)
+    scan_core(region, idx, got, data_idx, PropMode::On)
 }
 
 /// Shared decode loop for both depth levels.
 fn scan_core(
     region: &ScanRegion,
     idx: &SegmentIndex,
-    got_slots: &FxHashSet<Va>,
+    got: GotSlots<'_>,
     data_idx: &SegmentDataIndex,
     prop: PropMode,
 ) -> Vec<Xref> {
@@ -114,7 +114,7 @@ fn scan_core(
 
         // Direct branch/call xrefs — only from executable regions.
         if region_is_exec {
-            emit_direct_branches(&insn, va, idx, got_slots, &mut xrefs);
+            emit_direct_branches(&insn, va, idx, got, &mut xrefs);
         }
 
         emit_rip_relative(&insn, va, idx, &mut info_factory, &mut xrefs);
@@ -197,7 +197,7 @@ fn emit_direct_branches(
     insn: &Instruction,
     va: u64,
     idx: &SegmentIndex,
-    got_slots: &FxHashSet<Va>,
+    got: GotSlots<'_>,
     xrefs: &mut Vec<Xref>,
 ) {
     match insn.flow_control() {
@@ -234,7 +234,7 @@ fn emit_direct_branches(
         // GOT slot VA itself. The benchmark normalizes IDA's extern VAs back
         // to GOT slot VAs so both sides match on (from, got_slot_va).
         FlowControl::IndirectCall | FlowControl::IndirectBranch => {
-            emit_got_indirect(insn, va, got_slots, xrefs);
+            emit_got_indirect(insn, va, got, xrefs);
         }
         _ => {}
     }
@@ -251,21 +251,20 @@ fn emit_direct_branches(
 /// relocations) to avoid emitting spurious Call xrefs for non-GOT RIP-relative
 /// indirect calls (e.g., function pointer tables).
 #[inline]
-fn emit_got_indirect(
-    insn: &Instruction,
-    va: u64,
-    got_slots: &FxHashSet<Va>,
-    xrefs: &mut Vec<Xref>,
-) {
+fn emit_got_indirect(insn: &Instruction, va: u64, got: GotSlots<'_>, xrefs: &mut Vec<Xref>) {
     // Only applies when the single memory operand uses RIP-relative addressing.
     if insn.op_count() == 1
         && insn.op0_kind() == OpKind::Memory
         && insn.memory_base() == Register::RIP
     {
         let got_slot_va = Va::new(insn.memory_displacement64());
-        if got_slots.contains(&got_slot_va) {
+        if got.slots.contains(&got_slot_va) {
             let kind = if insn.flow_control() == FlowControl::IndirectCall {
                 XrefKind::Call
+            } else if got.call_only {
+                // PE import thunk (`jmp [rip+iat]`): IDA records a data read of
+                // the slot (emitted by `emit_rip_relative`), not a jump.
+                return;
             } else {
                 XrefKind::Jump
             };
@@ -719,6 +718,7 @@ mod tests {
     use crate::arch::ScanRegion;
     use crate::loader::{SegData, Segment, SegmentArch};
     use crate::xref::{Confidence, XrefKind};
+    use rustc_hash::FxHashSet;
 
     fn fake_seg(va: u64, data: &'static [u8]) -> Segment {
         Segment {
@@ -763,12 +763,56 @@ mod tests {
 
         let idx = SegmentIndex::build(&segs);
         let data_idx = SegmentDataIndex::build(&segs);
-        let xrefs = scan_linear(&region_for(&code), &idx, &FxHashSet::default(), &data_idx);
+        let xrefs = scan_linear(
+            &region_for(&code),
+            &idx,
+            GotSlots {
+                slots: &FxHashSet::default(),
+                call_only: false,
+            },
+            &data_idx,
+        );
         assert_eq!(xrefs.len(), 1);
         assert_eq!(xrefs[0].from, Va::new(0x1000));
         assert_eq!(xrefs[0].to, Va::new(0x2000));
         assert_eq!(xrefs[0].kind, XrefKind::Call);
         assert_eq!(xrefs[0].confidence, Confidence::LinearImmediate);
+    }
+
+    // ── CALL/JMP [RIP+disp32] through a GOT / IAT slot ────────────────────────
+
+    /// `ff 15 / ff 25 fa0f0000` at 0x1000: slot = 0x1006 + 0xffa = 0x2000.
+    fn got_indirect_kinds(opcode: u8, call_only: bool) -> Vec<XrefKind> {
+        static SLOT: [u8; 8] = [0x00; 8];
+        static CALL: [u8; 6] = [0xff, 0x15, 0xfa, 0x0f, 0x00, 0x00];
+        static JMP: [u8; 6] = [0xff, 0x25, 0xfa, 0x0f, 0x00, 0x00];
+        let code = fake_seg(0x1000, if opcode == 0x15 { &CALL } else { &JMP });
+        let segs = vec![fake_seg(0x1000, &CALL), fake_data_seg(0x2000, &SLOT)];
+        let idx = SegmentIndex::build(&segs);
+        let data_idx = SegmentDataIndex::build(&segs);
+        let slots: FxHashSet<Va> = [Va::new(0x2000)].into_iter().collect();
+        let got = GotSlots {
+            slots: &slots,
+            call_only,
+        };
+        scan_linear(&region_for(&code), &idx, got, &data_idx)
+            .iter()
+            .filter(|x| x.to == Va::new(0x2000))
+            .map(|x| x.kind)
+            .collect()
+    }
+
+    #[test]
+    fn test_got_indirect_call_emits_call() {
+        assert!(got_indirect_kinds(0x15, false).contains(&XrefKind::Call));
+        assert!(got_indirect_kinds(0x15, true).contains(&XrefKind::Call));
+    }
+
+    #[test]
+    fn test_got_indirect_jmp_is_jump_unless_call_only() {
+        assert!(got_indirect_kinds(0x25, false).contains(&XrefKind::Jump));
+        // PE import thunk: IDA records a data read, not a jump.
+        assert!(!got_indirect_kinds(0x25, true).contains(&XrefKind::Jump));
     }
 
     // ── JMP rel32 ─────────────────────────────────────────────────────────────
@@ -787,7 +831,15 @@ mod tests {
 
         let idx = SegmentIndex::build(&segs);
         let data_idx = SegmentDataIndex::build(&segs);
-        let xrefs = scan_linear(&region_for(&code), &idx, &FxHashSet::default(), &data_idx);
+        let xrefs = scan_linear(
+            &region_for(&code),
+            &idx,
+            GotSlots {
+                slots: &FxHashSet::default(),
+                call_only: false,
+            },
+            &data_idx,
+        );
         let jmp = xrefs.iter().find(|x| x.kind == XrefKind::Jump).unwrap();
         assert_eq!(jmp.from, Va::new(0x1005));
         assert_eq!(jmp.to, Va::new(0x2000));
@@ -810,7 +862,15 @@ mod tests {
 
         let idx = SegmentIndex::build(&segs);
         let data_idx = SegmentDataIndex::build(&segs);
-        let xrefs = scan_linear(&region_for(&code), &idx, &FxHashSet::default(), &data_idx);
+        let xrefs = scan_linear(
+            &region_for(&code),
+            &idx,
+            GotSlots {
+                slots: &FxHashSet::default(),
+                call_only: false,
+            },
+            &data_idx,
+        );
         let je = xrefs.iter().find(|x| x.kind == XrefKind::CondJump).unwrap();
         assert_eq!(je.from, Va::new(0x100a));
         assert_eq!(je.to, Va::new(0x2000));
@@ -830,7 +890,15 @@ mod tests {
 
         let idx = SegmentIndex::build(&segs);
         let data_idx = SegmentDataIndex::build(&segs);
-        let xrefs = scan_linear(&region_for(&code), &idx, &FxHashSet::default(), &data_idx);
+        let xrefs = scan_linear(
+            &region_for(&code),
+            &idx,
+            GotSlots {
+                slots: &FxHashSet::default(),
+                call_only: false,
+            },
+            &data_idx,
+        );
         // LEA = takes address → DataPointer (IDA dr_O), not DataRead
         let lea = xrefs
             .iter()
@@ -858,7 +926,15 @@ mod tests {
 
         let idx = SegmentIndex::build(&segs);
         let data_idx = SegmentDataIndex::build(&segs);
-        let xrefs = scan_with_prop(&region_for(&code), &idx, &FxHashSet::default(), &data_idx);
+        let xrefs = scan_with_prop(
+            &region_for(&code),
+            &idx,
+            GotSlots {
+                slots: &FxHashSet::default(),
+                call_only: false,
+            },
+            &data_idx,
+        );
         let prop = xrefs
             .iter()
             .find(|x| x.confidence == Confidence::LocalProp)
@@ -878,7 +954,15 @@ mod tests {
         let segs = vec![fake_seg(0x1000, &CODE)];
         let idx = SegmentIndex::build(&segs);
         let data_idx = SegmentDataIndex::build(&segs);
-        let xrefs = scan_linear(&region_for(&code), &idx, &FxHashSet::default(), &data_idx);
+        let xrefs = scan_linear(
+            &region_for(&code),
+            &idx,
+            GotSlots {
+                slots: &FxHashSet::default(),
+                call_only: false,
+            },
+            &data_idx,
+        );
         assert!(xrefs.is_empty());
     }
 
@@ -929,7 +1013,10 @@ mod tests {
         let xrefs = scan_with_prop(
             &region_for(&code_seg),
             &idx,
-            &FxHashSet::default(),
+            GotSlots {
+                slots: &FxHashSet::default(),
+                call_only: false,
+            },
             &data_idx,
         );
 
@@ -986,7 +1073,10 @@ mod tests {
         let xrefs = scan_with_prop(
             &region_for(&code_seg),
             &idx,
-            &FxHashSet::default(),
+            GotSlots {
+                slots: &FxHashSet::default(),
+                call_only: false,
+            },
             &data_idx,
         );
 
@@ -1024,7 +1114,10 @@ mod tests {
         let xrefs = scan_with_prop(
             &region_for(&code_seg),
             &idx,
-            &FxHashSet::default(),
+            GotSlots {
+                slots: &FxHashSet::default(),
+                call_only: false,
+            },
             &data_idx,
         );
 

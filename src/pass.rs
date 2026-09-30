@@ -305,7 +305,7 @@ impl<'a> XrefPass<'a> {
         let ctx = ScanCtx {
             seg_idx: &seg_idx,
             data_idx: &data_idx,
-            got_slots: &self.binary.got_slots,
+            got: self.binary.got(),
             pie_base: self.binary.pie_base,
         };
 
@@ -531,7 +531,7 @@ struct ScanCtx<'a> {
     /// Used by the x86-64 scanner to restrict `CALL [RIP+disp32]` /
     /// `JMP [RIP+disp32]` xref emission to actual import-table slots.
     /// Populated for ELF (GLOB_DAT / JUMP_SLOT) and PE (IAT); empty for Mach-O.
-    got_slots: &'a rustc_hash::FxHashSet<Va>,
+    got: crate::loader::GotSlots<'a>,
     /// PIE rebase offset applied to this binary's segments.
     /// Zero for non-PIE binaries and position-dependent executables.
     /// Forwarded to architecture scanners that need it (e.g. ARM32 Thumb
@@ -584,11 +584,11 @@ fn scan_shard(
         }
         (Arch::X86_64, Depth::Linear) => {
             let region = ScanRegion::new(seg, start_va, end_va);
-            x86_64::scan_linear(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
+            x86_64::scan_linear(&region, ctx.seg_idx, ctx.got, ctx.data_idx)
         }
         (Arch::X86_64, Depth::Paired) => {
             let region = ScanRegion::new(seg, start_va, end_va);
-            x86_64::scan_with_prop(&region, ctx.seg_idx, ctx.got_slots, ctx.data_idx)
+            x86_64::scan_with_prop(&region, ctx.seg_idx, ctx.got, ctx.data_idx)
         }
         // ByteScan never generates code shards — the shard vec is empty for
         // this depth, so these arms are unreachable in production.

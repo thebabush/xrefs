@@ -80,6 +80,7 @@ pub(super) fn parse_dyld_cache(path: &Path) -> Result<DyldParseResult> {
             symbols: vec![],
             pie_base: 0,
             got_slots: FxHashSet::default(),
+            got_call_only: false,
             reloc_pointers: Vec::new(),
             extra_names: Vec::new(),
         },

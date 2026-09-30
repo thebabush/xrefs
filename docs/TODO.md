@@ -37,12 +37,6 @@
 
 ## Symbolic names
 
-- [ ] `build_pe_iat_slots` inserts `image_base + import.rva`, but goblin's
-  `Import.rva` is the hint/name entry (0 for ordinal imports); the real IAT
-  slot is `Import.offset`. Fixing it changes `got_slots` and therefore
-  scanner output, so run the benchmark before and after.
-  (`src/loader/pe.rs`)
-
 - [ ] Untested or unsupported name sources: threaded binds (Mach-O); PE
   delay-load imports; PE32 and PE ordinal imports (untested on real
   binaries); GNU-ld 12-byte ARM32 PLT and Thumb PLT; IRELATIVE PLT stubs;

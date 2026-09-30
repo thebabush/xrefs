@@ -104,6 +104,7 @@ pub(super) fn parse_macho(
         symbols,
         pie_base: 0,
         got_slots: FxHashSet::default(),
+        got_call_only: false,
         reloc_pointers,
         extra_names,
     })

@@ -345,6 +345,7 @@ pub(super) fn parse_elf(
         symbols,
         pie_base,
         got_slots,
+        got_call_only: false,
         reloc_pointers,
         extra_names,
     })

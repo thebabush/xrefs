@@ -143,6 +143,7 @@ pub(super) fn parse_pe(
         symbols,
         pie_base: 0,
         got_slots,
+        got_call_only: true,
         reloc_pointers,
         extra_names,
     })
@@ -293,10 +294,12 @@ fn build_pe_unwind_handler_xrefs(
 
 // ── IAT / base relocations ───────────────────────────────────────────────────
 
+/// IAT slot VAs, one per import.  goblin's `Import.offset` is the slot RVA;
+/// `Import.rva` is the hint/name entry (and 0 for imports by ordinal).
 fn build_pe_iat_slots(pe: &goblin::pe::PE, image_base: u64) -> FxHashSet<Va> {
     let mut slots = FxHashSet::default();
     for import in &pe.imports {
-        slots.insert(Va::new(image_base + import.rva as u64));
+        slots.insert(Va::new(image_base + import.offset as u64));
     }
     slots
 }

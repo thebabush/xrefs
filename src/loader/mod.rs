@@ -29,6 +29,13 @@ pub struct RelocPointer {
     pub to: Va,
 }
 
+/// GOT / IAT slots handed to the x86-64 scanner (see [`LoadedBinary::got_call_only`]).
+#[derive(Clone, Copy)]
+pub struct GotSlots<'a> {
+    pub slots: &'a FxHashSet<Va>,
+    pub call_only: bool,
+}
+
 /// A named symbol exported by (or defined in) the binary.
 #[derive(Clone, Debug)]
 pub struct Symbol {
@@ -304,6 +311,12 @@ pub struct LoadedBinary {
     /// (vs arbitrary RIP-relative indirect calls through non-GOT pointers).
     /// Populated for ELF binaries; empty for Mach-O and PE.
     pub got_slots: FxHashSet<Va>,
+    /// True if only *calls* through `got_slots` are xrefs to the slot (PE).
+    ///
+    /// IDA records `jmp [rip+iat]` import thunks as a data read of the IAT
+    /// slot, not a jump, so the scanner must not emit a `Jump` for them.
+    /// ELF PLT jumps are jumps, so this is false there.
+    pub got_call_only: bool,
     /// Relocation-derived pointer entries.
     ///
     /// Each entry represents a pointer-sized slot that the relocation table
@@ -359,6 +372,7 @@ impl LoadedBinary {
                 symbols: p.symbols,
                 pie_base: p.pie_base,
                 got_slots: p.got_slots,
+                got_call_only: p.got_call_only,
                 reloc_pointers: p.reloc_pointers,
                 _mmap: mmap,
                 _bss_bufs: vec![],
@@ -381,6 +395,7 @@ impl LoadedBinary {
             symbols: p.symbols,
             pie_base: p.pie_base,
             got_slots: p.got_slots,
+            got_call_only: p.got_call_only,
             reloc_pointers: p.reloc_pointers,
             _mmap: mmap,
             _bss_bufs: bss_bufs,
@@ -408,10 +423,19 @@ impl LoadedBinary {
             names: NameTable::default(),
             pie_base: 0,
             got_slots: FxHashSet::default(),
+            got_call_only: false,
             reloc_pointers: Vec::new(),
             _mmap: mmap,
             _bss_bufs: vec![],
             _dyld_ctx: None,
+        }
+    }
+
+    /// GOT / IAT slot set plus its call-only flag, as the x86-64 scanner wants it.
+    pub fn got(&self) -> GotSlots<'_> {
+        GotSlots {
+            slots: &self.got_slots,
+            call_only: self.got_call_only,
         }
     }
 
@@ -482,6 +506,8 @@ struct ParseResult {
     pie_base: u64,
     /// GOT slot VAs from GLOB_DAT / JUMP_SLOT relocs. Empty for non-ELF.
     got_slots: FxHashSet<Va>,
+    /// See [`LoadedBinary::got_call_only`].
+    got_call_only: bool,
     /// Relocation-derived pointer entries.
     reloc_pointers: Vec<RelocPointer>,
     /// Names that are not in `symbols` (e.g. ELF `.dynsym` and GOT-slot names).
@@ -549,6 +575,7 @@ fn parse_binary(
                 symbols: vec![],
                 pie_base: 0,
                 got_slots: FxHashSet::default(),
+                got_call_only: false,
                 reloc_pointers: Vec::new(),
                 extra_names: Vec::new(),
             })

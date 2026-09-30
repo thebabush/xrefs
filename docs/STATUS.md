@@ -111,6 +111,15 @@ xr emits `to=got_slot_va` (the real address the CPU dereferences) for
 GOT-indirect calls/jumps. The benchmark normalizes extern-target xrefs back
 to GOT slot VAs by decoding instruction bytes at each `from`.
 
+On PE the IAT plays the GOT's role, but IDA records `jmp [rip+iat]` import
+thunks as a `data_read` of the slot (not a jump), so only `call [rip+iat]`
+is emitted as a `call` there (`LoadedBinary::got_call_only`). The slot VA
+is goblin's `Import.offset` (`Import.rva` is the hint/name entry). Fixing
+this added `call` xrefs only (e.g. sudo.exe +2064: call recall 0.635 → 0.905,
+concrt140.dll 0.806 → 0.869, simple.exe 0.870 → 0.965); the kind-agnostic
+(from, to) scores are unchanged because those pairs were already matched as
+`data_read`.
+
 ### Relocation-derived data_ptr recovery
 
 Relocation tables are parsed to extract authoritative pointer pairs:
