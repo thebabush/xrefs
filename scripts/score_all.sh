@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build once
-cargo build --release --bin benchmark 2>&1 | grep -v '^\s*$'
+cargo build --release --example benchmark 2>&1 | grep -v '^\s*$'
 
 # If no explicit targets, find all with ground truth
 if [ ${#TARGETS[@]} -eq 0 ]; then
@@ -53,7 +53,7 @@ for binary in "${TARGETS[@]}"; do
     fi
     name=$(basename "$binary")
     # Extract the overall line and parse out just the numbers
-    raw=$(cargo run --release --bin benchmark -- \
+    raw=$(cargo run --release --example benchmark -- \
         -b "$binary" -g "$gt" --depth "$DEPTH" --runs 1 -j "$JOBS" 2>&1 \
         | grep '  overall' || true)
     if [ -n "$raw" ]; then
