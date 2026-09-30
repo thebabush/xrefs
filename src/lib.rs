@@ -1,6 +1,7 @@
 pub mod arch;
 pub mod disasm;
 pub mod loader;
+pub mod names;
 pub mod output;
 pub mod pass;
 pub mod rust;
@@ -10,6 +11,7 @@ pub mod xref;
 
 pub use loader::{Arch, Arm32Segment, DecodeMode, LoadedBinary, ModeSwitch, RelocPointer,
                  Segment, SegmentArch, Symbol};
+pub use names::{NameTable, NameTableBuilder};
 pub use pass::{Depth, PassConfig, PassResult, XrefPass};
 pub use rust::{StringBlobIndex, DEFAULT_MIN_BLOB_LEN};
 pub use va::{Va, VaRange};

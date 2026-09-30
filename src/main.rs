@@ -108,6 +108,13 @@ struct Cli {
     /// Longer strings are truncated with a middle ellipsis.
     #[arg(long, default_value = "100")]
     rust_string_max: usize,
+
+    /// Do not print symbol names next to xref addresses.
+    /// By default, names defined at exactly the `from`/`to` VA are shown
+    /// (text: `<a|b>` after the address; jsonl: `from_names`/`to_names`;
+    /// csv: trailing `from_names`/`to_names` columns).
+    #[arg(long)]
+    no_names: bool,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -232,6 +239,9 @@ fn main() -> Result<()> {
         );
     }
 
+    // Skip lookups entirely when disabled or when the binary has no names.
+    let use_names = !cli.no_names && !binary.names.is_empty();
+
     let kind_filter = cli.kind;
     let limit = cli.limit;
     let mut emitted = 0usize;
@@ -321,6 +331,12 @@ fn main() -> Result<()> {
                     None
                 };
 
+                let (from_names, to_names): (&[Box<str>], &[Box<str>]) = if use_names {
+                    (binary.names.names_at(x.from), binary.names.names_at(x.to))
+                } else {
+                    (&[], &[])
+                };
+
                 let record = XrefRecord {
                     from: x.from,
                     to: x.to,
@@ -328,6 +344,8 @@ fn main() -> Result<()> {
                     confidence: x.confidence,
                     context,
                     rust_string,
+                    from_names,
+                    to_names,
                 };
                 printer.write_record(&record, &mut buf);
             }

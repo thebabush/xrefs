@@ -2,7 +2,7 @@ use super::{alloc_bss, ParseResult, SegData, Segment, Symbol};
 use crate::loader::{Arch, Arm32Segment, DecodeMode, ModeSwitch, RelocPointer, SegmentArch};
 use crate::va::Va;
 use anyhow::Result;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Vote over the first [`PROBE_WORDS`] 4-byte-aligned words of an executable
 /// section to decide between ARM32 and Thumb mode.
@@ -326,6 +326,9 @@ pub(super) fn parse_elf(
     }
 
     let got_slots = build_elf_got_slots(elf, pie_base);
+    let slot_names = build_elf_got_slot_names(elf, pie_base);
+    let stub_names = build_elf_plt_stub_names(elf, bytes, arch, pie_base, &slot_names);
+    let extra_names = build_elf_extra_names(elf, pie_base, slot_names, stub_names);
     let mut reloc_pointers = build_elf_reloc_pointers(elf, bytes, pie_base, &segments);
     reloc_pointers.extend(build_elf_dynsym_pointers(elf, pie_base));
 
@@ -337,6 +340,7 @@ pub(super) fn parse_elf(
         pie_base,
         got_slots,
         reloc_pointers,
+        extra_names,
     })
 }
 
@@ -476,7 +480,13 @@ fn build_elf_dynsym_pointers(elf: &goblin::elf::Elf, pie_base: u64) -> Vec<Reloc
     pointers
 }
 
-fn build_elf_got_slots(elf: &goblin::elf::Elf, pie_base: u64) -> FxHashSet<Va> {
+/// Yield `(slot_va, sym_index)` for every GLOB_DAT / JUMP_SLOT relocation that
+/// names a symbol.  Shared by the GOT-slot set and the GOT-slot name builder so
+/// the reloc-type filter lives in one place.
+fn got_relocs(
+    relocs: impl Iterator<Item = goblin::elf::Reloc>,
+    pie_base: u64,
+) -> impl Iterator<Item = (Va, usize)> {
     const R_X86_64_GLOB_DAT: u32 = 6;
     const R_X86_64_JUMP_SLOT: u32 = 7;
     const R_AARCH64_GLOB_DAT: u32 = 1025;
@@ -496,13 +506,197 @@ fn build_elf_got_slots(elf: &goblin::elf::Elf, pie_base: u64) -> FxHashSet<Va> {
         )
     };
 
+    relocs
+        .filter(move |rel| is_got_reloc(rel.r_type) && rel.r_sym != 0)
+        .map(move |rel| (Va::new(rel.r_offset + pie_base), rel.r_sym))
+}
+
+fn all_dyn_relocs<'a>(elf: &'a goblin::elf::Elf) -> impl Iterator<Item = goblin::elf::Reloc> + 'a {
     elf.dynrelas
         .iter()
         .chain(elf.dynrels.iter())
         .chain(elf.pltrelocs.iter())
-        .filter(|rel| is_got_reloc(rel.r_type) && rel.r_sym != 0)
-        .map(|rel| Va::new(rel.r_offset + pie_base))
+}
+
+fn build_elf_got_slots(elf: &goblin::elf::Elf, pie_base: u64) -> FxHashSet<Va> {
+    got_relocs(all_dyn_relocs(elf), pie_base)
+        .map(|(slot, _)| slot)
         .collect()
+}
+
+/// Name every GOT slot after the dynamic symbol its relocation binds, so a
+/// normalized `call [rip+got]` resolves to e.g. `printf`.  `name_of` maps a
+/// `.dynsym` index to its raw name.
+fn got_slot_names<'a>(
+    slots: impl Iterator<Item = (Va, usize)>,
+    name_of: impl Fn(usize) -> Option<&'a str>,
+) -> Vec<Symbol> {
+    slots
+        .filter_map(|(va, idx)| {
+            let name = name_of(idx).filter(|n| !n.is_empty())?;
+            Some(Symbol {
+                name: name.to_string(),
+                va,
+            })
+        })
+        .collect()
+}
+
+fn build_elf_got_slot_names(elf: &goblin::elf::Elf, pie_base: u64) -> Vec<Symbol> {
+    got_slot_names(got_relocs(all_dyn_relocs(elf), pie_base), |idx| {
+        let sym = elf.dynsyms.get(idx)?;
+        elf.dynstrtab.get_at(sym.st_name)
+    })
+}
+
+/// Names beyond `.symtab`: defined `.dynsym` symbols (the only names a stripped
+/// binary has), GOT slots named after their imported symbol, and PLT stubs
+/// named after the slot they jump through.
+fn build_elf_extra_names(
+    elf: &goblin::elf::Elf,
+    pie_base: u64,
+    slot_names: Vec<Symbol>,
+    stub_names: Vec<Symbol>,
+) -> Vec<Symbol> {
+    use goblin::elf::section_header::SHN_UNDEF;
+
+    let mut names = Vec::new();
+    for sym in &elf.dynsyms {
+        if sym.st_shndx == SHN_UNDEF as usize || sym.st_value == 0 {
+            continue;
+        }
+        if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
+            if !name.is_empty() {
+                names.push(Symbol {
+                    name: name.to_string(),
+                    va: Va::new((sym.st_value & !1) + pie_base),
+                });
+            }
+        }
+    }
+
+    names.extend(slot_names);
+    names.extend(stub_names);
+    names
+}
+
+/// Slot VA a x86-64 PLT entry jumps through: `[f3 0f 1e fa] [f2] ff 25 disp32`
+/// (`jmp [rip+disp32]`, optionally after `endbr64` / `bnd`).  Anchoring at the
+/// entry start skips PLT0, whose `ff 35` push comes first.
+fn x86_64_plt_slot(entry: &[u8], entry_va: u64) -> Option<u64> {
+    let mut i = 0;
+    if entry.starts_with(&[0xf3, 0x0f, 0x1e, 0xfa]) {
+        i += 4;
+    }
+    if entry.get(i) == Some(&0xf2) {
+        i += 1;
+    }
+    if entry.get(i..i + 2)? != [0xff, 0x25] {
+        return None;
+    }
+    let disp = i32::from_le_bytes(entry.get(i + 2..i + 6)?.try_into().ok()?);
+    Some((entry_va + i as u64 + 6).wrapping_add(disp as i64 as u64))
+}
+
+/// Slot VA an AArch64 PLT entry loads: `adrp xN, page ; ldr xM, [xN, #imm]`
+/// somewhere in the first three words (a leading `bti c` shifts them).
+fn aarch64_plt_slot(entry: &[u8], entry_va: u64) -> Option<u64> {
+    use crate::arch::arm64_decode::Arm64Insn;
+
+    let words: Vec<u32> = entry
+        .chunks_exact(4)
+        .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+        .collect();
+    words.windows(2).enumerate().find_map(|(i, w)| {
+        let (adrp, ldr) = (Arm64Insn::decode(w[0]), Arm64Insn::decode(w[1]));
+        if !matches!((adrp, ldr), (Arm64Insn::Adrp(_), Arm64Insn::Ldr(_))) {
+            return None;
+        }
+        // 64-bit load off the register the adrp just wrote.
+        if ldr.ldr_str_size() != 3 || ldr.rn() != adrp.rd() {
+            return None;
+        }
+        let pc = entry_va + i as u64 * 4;
+        Some(adrp.adrp_page(pc) + ldr.ldr_str_offset())
+    })
+}
+
+/// Slot VA a classic ARM32 PLT entry loads:
+/// `add ip, pc, #imm ; add ip, ip, #imm ; ldr pc, [ip, #imm]!`.
+fn arm32_plt_slot(entry: &[u8], entry_va: u64) -> Option<u64> {
+    let w: Vec<u32> = entry
+        .chunks_exact(4)
+        .take(3)
+        .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+        .collect();
+    let [a, b, c] = w[..] else { return None };
+    // Shifter-operand immediate: imm8 rotated right by 2 * rot.
+    let imm = |w: u32| (w & 0xff).rotate_right(((w >> 8) & 0xf) * 2) as u64;
+    // add ip, pc, #imm / add ip, ip, #imm / ldr pc, [ip, #+imm12]!
+    if a & 0xffff_f000 != 0xe28f_c000
+        || b & 0xffff_f000 != 0xe28c_c000
+        || c & 0xffff_f000 != 0xe5bc_f000
+    {
+        return None;
+    }
+    Some(entry_va + 8 + imm(a) + imm(b) + (c & 0xfff) as u64)
+}
+
+/// Name each PLT stub entry VA after the import whose GOT slot the stub jumps
+/// through.  Stub bytes come from the `.plt` family of sections; the decoded
+/// slot lives in the same rebased space as `slot_names`.
+fn build_elf_plt_stub_names(
+    elf: &goblin::elf::Elf,
+    bytes: &[u8],
+    arch: Arch,
+    pie_base: u64,
+    slot_names: &[Symbol],
+) -> Vec<Symbol> {
+    let decode: fn(&[u8], u64) -> Option<u64> = match arch {
+        Arch::X86_64 => x86_64_plt_slot,
+        Arch::Arm64 => aarch64_plt_slot,
+        Arch::Arm32 => arm32_plt_slot,
+        _ => return Vec::new(),
+    };
+    let by_slot: FxHashMap<Va, &str> = slot_names.iter().map(|s| (s.va, s.name.as_str())).collect();
+
+    let mut stubs = Vec::new();
+    for sh in &elf.section_headers {
+        let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) else {
+            continue;
+        };
+        if !matches!(name, ".plt" | ".plt.sec" | ".plt.got" | ".iplt") || sh.sh_addr == 0 {
+            continue;
+        }
+        let Some(data) = (sh.sh_offset as usize)
+            .checked_add(sh.sh_size as usize)
+            .and_then(|end| bytes.get(sh.sh_offset as usize..end))
+        else {
+            continue;
+        };
+        // (entry length, stride).  ARM32 is probed at every word: GNU ld packs
+        // 12-byte entries after a 20-byte PLT0, lld uses 16-byte entries, and
+        // the decoder anchors on the leading `add ip, pc` so either layout
+        // resolves.  Older x86-64 `.plt.got` entries are 8 bytes.
+        let (len, step) = match (arch, name) {
+            (Arch::Arm32, _) => (12, 4),
+            (Arch::X86_64, ".plt.got") => (8, 8),
+            _ => (16, 16),
+        };
+        let mut off = 0;
+        while off + len <= data.len() {
+            let va = sh.sh_addr + pie_base + off as u64;
+            let slot = decode(&data[off..off + len], va);
+            if let Some(n) = slot.and_then(|s| by_slot.get(&Va::new(s))) {
+                stubs.push(Symbol {
+                    name: n.to_string(),
+                    va: Va::new(va),
+                });
+            }
+            off += step;
+        }
+    }
+    stubs
 }
 
 fn build_elf_reloc_pointers(
@@ -612,4 +806,126 @@ fn build_elf_reloc_pointers(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goblin::elf::Reloc;
+
+    fn reloc(r_offset: u64, r_type: u32, r_sym: usize) -> Reloc {
+        Reloc {
+            r_offset,
+            r_addend: None,
+            r_sym,
+            r_type,
+        }
+    }
+
+    fn dynsym_name(idx: usize) -> Option<&'static str> {
+        ["", "printf", "", "__libc_start_main"].get(idx).copied()
+    }
+
+    #[test]
+    fn test_got_relocs_filters_type_and_sym() {
+        let rels = [
+            reloc(0x100, 7, 1),    // JUMP_SLOT
+            reloc(0x108, 6, 3),    // GLOB_DAT
+            reloc(0x110, 8, 1),    // RELATIVE: not a GOT reloc
+            reloc(0x118, 6, 0),    // no symbol
+            reloc(0x120, 1026, 1), // AArch64 JUMP_SLOT
+        ];
+        let got: Vec<_> = got_relocs(rels.iter().cloned(), 0x1000).collect();
+        assert_eq!(
+            got,
+            [
+                (Va::new(0x1100), 1),
+                (Va::new(0x1108), 3),
+                (Va::new(0x1120), 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_got_slot_names() {
+        let rels = [
+            reloc(0x100, 7, 1),
+            reloc(0x108, 6, 3),
+            reloc(0x110, 7, 2),
+            reloc(0x118, 7, 9),
+        ];
+        let syms = got_slot_names(got_relocs(rels.iter().cloned(), 0), dynsym_name);
+        let got: Vec<_> = syms.iter().map(|s| (s.name.as_str(), s.va)).collect();
+        // idx 2 has an empty name and idx 9 is out of range: both skipped.
+        assert_eq!(
+            got,
+            [
+                ("printf", Va::new(0x100)),
+                ("__libc_start_main", Va::new(0x108))
+            ]
+        );
+    }
+
+    // The decoder tests below use entries copied from real binaries.
+
+    #[test]
+    fn test_x86_64_plt_slot_lazy() {
+        // hello-linux-gcc .plt entry at 0x6030: jmp [rip+0x50962]
+        let entry = [
+            0xff, 0x25, 0x62, 0x09, 0x05, 0x00, 0x68, 0x00, 0x00, 0x00, 0x00, 0xe9, 0xe0, 0xff,
+            0xff, 0xff,
+        ];
+        assert_eq!(x86_64_plt_slot(&entry, 0x6030), Some(0x56998));
+        // PLT0 starts with `push [rip+..]`, never a named slot.
+        let plt0 = [
+            0xff, 0x35, 0x62, 0x09, 0x05, 0x00, 0xff, 0x25, 0x64, 0x09, 0x05, 0x00, 0x0f, 0x1f,
+            0x40, 0x00,
+        ];
+        assert_eq!(x86_64_plt_slot(&plt0, 0x6020), None);
+    }
+
+    #[test]
+    fn test_x86_64_plt_slot_plt_got_and_ibt() {
+        // libssl3-amd64 .plt.got entry at 0x218a0 (8 bytes)
+        let got = [0xff, 0x25, 0xea, 0x36, 0x08, 0x00, 0x66, 0x90];
+        assert_eq!(x86_64_plt_slot(&got, 0x218a0), Some(0xa4f90));
+        // libpjsip .plt.sec entry at 0xfe70: endbr64 ; bnd jmp [rip+0x5119d]
+        let sec = [
+            0xf3, 0x0f, 0x1e, 0xfa, 0xf2, 0xff, 0x25, 0x9d, 0x11, 0x05, 0x00, 0x0f, 0x1f, 0x44,
+            0x00, 0x00,
+        ];
+        assert_eq!(x86_64_plt_slot(&sec, 0xfe70), Some(0x61018));
+    }
+
+    #[test]
+    fn test_aarch64_plt_slot() {
+        // libssl3-arm64 .plt entry at 0x1f0c0:
+        //   adrp x16, 0xae000 ; ldr x17, [x16, #0x968] ; add x16, x16, #0x968 ; br x17
+        let words: [u32; 4] = [0xf000_0470, 0xf944_b611, 0x9125_a210, 0xd61f_0220];
+        let entry: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        assert_eq!(aarch64_plt_slot(&entry, 0x1f0c0), Some(0xae968));
+        // A leading `bti c` shifts the pair by one word.
+        let mut bti = 0xd503_245fu32.to_le_bytes().to_vec();
+        bti.extend_from_slice(&entry[..12]);
+        assert_eq!(aarch64_plt_slot(&bti, 0x1f0bc), Some(0xae968));
+        // Not a stub.
+        assert_eq!(
+            aarch64_plt_slot(&[0x1f, 0x20, 0x03, 0xd5].repeat(4), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn test_arm32_plt_slot() {
+        // libssl3-arm32 .plt entry at 0x7ded0:
+        //   add ip, pc, #0 ; add ip, ip, #0x7000 ; ldr pc, [ip, #0xe4c]!
+        let words: [u32; 3] = [0xe28f_c600, 0xe28c_ca07, 0xe5bc_fe4c];
+        let entry: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        assert_eq!(arm32_plt_slot(&entry, 0x7ded0), Some(0x85d24));
+        // PLT0 begins `str lr, [sp, #-4]!`.
+        let plt0 = [
+            0x04, 0xe0, 0x2d, 0xe5, 0x00, 0x60, 0x8f, 0xe2, 0x07, 0xea, 0x8e, 0xe2,
+        ];
+        assert_eq!(arm32_plt_slot(&plt0, 0x7deb0), None);
+    }
 }

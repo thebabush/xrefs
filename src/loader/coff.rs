@@ -129,6 +129,7 @@ pub(super) fn parse_coff(
         pie_base: 0,
         got_slots: FxHashSet::default(),
         reloc_pointers: Vec::new(),
+        extra_names: Vec::new(),
     })
 }
 

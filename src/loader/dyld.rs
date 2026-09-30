@@ -81,6 +81,7 @@ pub(super) fn parse_dyld_cache(path: &Path) -> Result<DyldParseResult> {
             pie_base: 0,
             got_slots: FxHashSet::default(),
             reloc_pointers: Vec::new(),
+            extra_names: Vec::new(),
         },
         dyld_ctx: ctx,
     })

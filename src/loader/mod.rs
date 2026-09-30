@@ -4,6 +4,7 @@ mod elf;
 mod macho;
 mod pe;
 
+use crate::names::NameTable;
 use crate::va::Va;
 use anyhow::{anyhow, Result};
 use goblin::Object;
@@ -32,7 +33,7 @@ pub struct RelocPointer {
 #[derive(Clone, Debug)]
 pub struct Symbol {
     pub name: String,
-    pub va: Va,
+    pub va:   Va,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +81,7 @@ pub enum DecodeMode {
 /// exported symbols in stripped binaries.
 #[derive(Debug, Clone, Copy)]
 pub struct ModeSwitch {
-    pub va:   Va,
+    pub va: Va,
     pub mode: DecodeMode,
 }
 
@@ -270,7 +271,7 @@ impl Segment {
 /// appear before `segments`.  The `test_backing_fields_after_segments` test
 /// enforces this invariant at compile time.
 pub struct LoadedBinary {
-    // ── public data (fields 0–6) ──────────────────────────────────────────
+    // ── public data (fields 0–7) ──────────────────────────────────────────
     /// Architecture detected from the binary.
     pub arch: Arch,
     /// All mapped segments (code + data).
@@ -283,6 +284,8 @@ pub struct LoadedBinary {
     pub entry_points: Vec<Va>,
     /// Exports / named symbols with their addresses.
     pub symbols: Vec<Symbol>,
+    /// Exact-VA name lookup built from `symbols` (and any other name sources).
+    pub names: NameTable,
     /// Non-zero if this is a PIE ELF that was rebased by the loader.
     /// All segment VAs, entry points, and symbols have already had this
     /// value added. 0 for non-PIE binaries and non-ELF formats.
@@ -303,7 +306,7 @@ pub struct LoadedBinary {
     /// Empty for formats without relocation tables.
     pub reloc_pointers: Vec<RelocPointer>,
 
-    // ── backing stores (fields 7–9) — MUST come after `segments` ──────────
+    // ── backing stores (fields 8–10) — MUST come after `segments` ──────────
     /// The underlying mmap — kept alive so `Segment::data` slices remain valid.
     _mmap: Mmap,
     /// Zero-filled BSS buffers — `Segment::data` slices may point into these.
@@ -345,6 +348,7 @@ impl LoadedBinary {
                 arch: p.arch,
                 segments: p.segments,
                 entry_points: p.entry_points,
+                names: NameTable::from_symbols_and_extra(&p.symbols, &p.extra_names),
                 symbols: p.symbols,
                 pie_base: p.pie_base,
                 got_slots: p.got_slots,
@@ -366,6 +370,7 @@ impl LoadedBinary {
             arch: p.arch,
             segments: p.segments,
             entry_points: p.entry_points,
+            names: NameTable::from_symbols_and_extra(&p.symbols, &p.extra_names),
             symbols: p.symbols,
             pie_base: p.pie_base,
             got_slots: p.got_slots,
@@ -393,6 +398,7 @@ impl LoadedBinary {
             segments,
             entry_points: vec![],
             symbols: vec![],
+            names: NameTable::default(),
             pie_base: 0,
             got_slots: FxHashSet::default(),
             reloc_pointers: Vec::new(),
@@ -467,6 +473,9 @@ struct ParseResult {
     got_slots: FxHashSet<Va>,
     /// Relocation-derived pointer entries.
     reloc_pointers: Vec<RelocPointer>,
+    /// Names that are not in `symbols` (e.g. ELF `.dynsym` and GOT-slot names).
+    /// Fed to the name table only; never used for scanning.
+    extra_names: Vec<Symbol>,
 }
 
 /// Allocate a zero-filled buffer of `size` bytes, store it in `bufs` for
@@ -530,6 +539,7 @@ fn parse_binary(
                 pie_base: 0,
                 got_slots: FxHashSet::default(),
                 reloc_pointers: Vec::new(),
+                extra_names: Vec::new(),
             })
         }
         _ => Err(anyhow!("unsupported binary format")),

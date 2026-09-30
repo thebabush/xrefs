@@ -20,7 +20,7 @@ DEPTH_MAP = {0: "scan", 1: "linear", 2: "paired"}
 def run_scanner(binary: Path, depth: int = 2) -> list[dict]:
     """Run scanner and return list of {from, to, kind} dicts via CSV output."""
     depth_str = DEPTH_MAP.get(depth, "paired")
-    cmd = [str(BINARY_PATH), str(binary), "--depth", depth_str, "--format", "csv"]
+    cmd = [str(BINARY_PATH), str(binary), "--depth", depth_str, "--format", "csv", "--no-names"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"Scanner error:\n{result.stderr}", file=sys.stderr)

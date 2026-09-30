@@ -134,6 +134,7 @@ pub(super) fn parse_pe(
     let mut reloc_pointers = build_pe_reloc_pointers(bytes, pe, image_base, &segments);
     build_pe_pdata_xrefs(bytes, pe, image_base, &segments, &mut reloc_pointers);
     let got_slots = build_pe_iat_slots(pe, image_base);
+    let extra_names = build_pe_extra_names(pe, image_base);
 
     Ok(ParseResult {
         arch,
@@ -143,6 +144,7 @@ pub(super) fn parse_pe(
         pie_base: 0,
         got_slots,
         reloc_pointers,
+        extra_names,
     })
 }
 
@@ -299,6 +301,32 @@ fn build_pe_iat_slots(pe: &goblin::pe::PE, image_base: u64) -> FxHashSet<Va> {
     slots
 }
 
+/// Names beyond `symbols` (which already carries the named exports): IAT slots
+/// named `Func@DLL` / `#ordinal@DLL` after the import they receive.
+///
+/// goblin's `Import.offset` is the IAT slot RVA (`rva` is the hint/name entry,
+/// and 0 for imports by ordinal), so names are keyed on `offset`.
+fn build_pe_extra_names(pe: &goblin::pe::PE, image_base: u64) -> Vec<Symbol> {
+    pe.imports
+        .iter()
+        .map(|import| {
+            let name = (import.rva != 0).then_some(import.name.as_ref());
+            Symbol {
+                name: pe_import_name(import.dll, name, import.ordinal),
+                va: Va::new(image_base + import.offset as u64),
+            }
+        })
+        .collect()
+}
+
+/// `Func@DLL` for a named import, `#<ordinal>@DLL` for one by ordinal.
+fn pe_import_name(dll: &str, name: Option<&str>, ordinal: u16) -> String {
+    match name {
+        Some(n) => format!("{n}@{dll}"),
+        None => format!("#{ordinal}@{dll}"),
+    }
+}
+
 struct PeSectionEntry {
     rva: u32,
     end_rva: u32,
@@ -413,4 +441,30 @@ fn build_pe_reloc_pointers(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pe_import_name;
+
+    #[test]
+    fn import_by_name() {
+        assert_eq!(
+            pe_import_name("KERNEL32.dll", Some("CreateFileW"), 0x12c),
+            "CreateFileW@KERNEL32.dll"
+        );
+    }
+
+    #[test]
+    fn import_by_ordinal() {
+        assert_eq!(pe_import_name("WS2_32.dll", None, 17), "#17@WS2_32.dll");
+    }
+
+    #[test]
+    fn dll_name_kept_verbatim() {
+        assert_eq!(
+            pe_import_name("api-ms-win-crt-heap-l1-1-0", Some("free"), 0),
+            "free@api-ms-win-crt-heap-l1-1-0"
+        );
+    }
 }

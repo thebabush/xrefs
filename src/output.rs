@@ -59,6 +59,61 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
     s
 }
 
+/// Append ` <a|b>` (leading space) to `buf`; nothing when `names` is empty.
+/// Control characters are escaped so a record always stays on one line.
+fn write_text_names(names: &[Box<str>], buf: &mut Vec<u8>) {
+    if names.is_empty() {
+        return;
+    }
+    buf.extend_from_slice(b" <");
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            buf.push(b'|');
+        }
+        for c in name.chars() {
+            match c {
+                '\n' => buf.extend_from_slice(b"\\n"),
+                '\r' => buf.extend_from_slice(b"\\r"),
+                '\t' => buf.extend_from_slice(b"\\t"),
+                c if c.is_control() => {
+                    let _ = write!(buf, "\\x{:02x}", c as u32);
+                }
+                c => {
+                    let mut tmp = [0u8; 4];
+                    buf.extend_from_slice(c.encode_utf8(&mut tmp).as_bytes());
+                }
+            }
+        }
+    }
+    buf.push(b'>');
+}
+
+/// Append `names` joined with `|` as one CSV field, quoted per RFC 4180 only
+/// when it contains a comma, quote, or line break (newlines are backslash-escaped
+/// so a record stays on one row, as for the `string` column).
+fn write_csv_names(names: &[Box<str>], buf: &mut Vec<u8>) {
+    let needs_quote = names.iter().any(|n| n.contains([',', '"', '\n', '\r']));
+    if needs_quote {
+        buf.push(b'"');
+    }
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            buf.push(b'|');
+        }
+        for &b in name.as_bytes() {
+            match b {
+                b'"' => buf.extend_from_slice(b"\"\""),
+                b'\n' => buf.extend_from_slice(b"\\n"),
+                b'\r' => buf.extend_from_slice(b"\\r"),
+                b => buf.push(b),
+            }
+        }
+    }
+    if needs_quote {
+        buf.push(b'"');
+    }
+}
+
 // ── Data types ────────────────────────────────────────────────────────────────
 
 /// A single line of disassembly or hex context around an xref site.
@@ -95,7 +150,7 @@ impl ContextLine {
 
 /// A fully resolved xref, optionally annotated with disasm context.
 #[derive(Serialize)]
-pub struct XrefRecord {
+pub struct XrefRecord<'a> {
     pub from: Va,
     pub to: Va,
     /// Kind label (`"call"`, `"jump"`, `"data_read"`, `"data_write"`, `"data_ptr"`).
@@ -111,6 +166,12 @@ pub struct XrefRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "string")]
     pub rust_string: Option<String>,
+    /// Symbol names at exactly `from` (empty when none or `--no-names`).
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub from_names: &'a [Box<str>],
+    /// Symbol names at exactly `to` (empty when none or `--no-names`).
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub to_names: &'a [Box<str>],
 }
 
 fn serialize_kind<S: serde::Serializer>(k: &XrefKind, s: S) -> Result<S::Ok, S::Error> {
@@ -138,7 +199,7 @@ pub trait Printer: Send + Sync {
     }
     /// Append the formatted representation of `record` into `buf`.
     /// Called in parallel — must be pure (no interior mutability).
-    fn write_record(&self, record: &XrefRecord, buf: &mut Vec<u8>);
+    fn write_record(&self, record: &XrefRecord<'_>, buf: &mut Vec<u8>);
     /// Bytes to write after the last batch (e.g. `]\n` for JSON). Empty by default.
     fn footer_bytes(&self) -> Vec<u8> {
         vec![]
@@ -150,12 +211,14 @@ pub trait Printer: Send + Sync {
 pub struct TextPrinter;
 
 impl Printer for TextPrinter {
-    fn write_record(&self, r: &XrefRecord, buf: &mut Vec<u8>) {
+    fn write_record(&self, r: &XrefRecord<'_>, buf: &mut Vec<u8>) {
         // Fast path: direct byte writes bypass fmt::write / LowerHex::fmt /
         // pad_integral entirely.  ~10× faster than the equivalent writeln!.
         r.from.write_hex_padded(buf);
+        write_text_names(r.from_names, buf);
         buf.extend_from_slice(b" -> ");
         r.to.write_hex_padded(buf);
+        write_text_names(r.to_names, buf);
         buf.extend_from_slice(b"  ");
         buf.extend_from_slice(r.kind.name().as_bytes());
         buf.extend_from_slice(b"  [");
@@ -217,7 +280,7 @@ impl Printer for TextPrinter {
 pub struct JsonlPrinter;
 
 impl Printer for JsonlPrinter {
-    fn write_record(&self, r: &XrefRecord, buf: &mut Vec<u8>) {
+    fn write_record(&self, r: &XrefRecord<'_>, buf: &mut Vec<u8>) {
         // XrefRecord contains only simple types (Va, XrefKind, Confidence,
         // Option<Vec<ContextLine>>), so serialisation should never fail.
         // Use `to_writer` to append directly into `buf` without an
@@ -236,10 +299,10 @@ pub struct CsvPrinter;
 
 impl Printer for CsvPrinter {
     fn header_bytes(&self) -> Vec<u8> {
-        b"from,to,kind,confidence,string\n".to_vec()
+        b"from,to,kind,confidence,string,from_names,to_names\n".to_vec()
     }
 
-    fn write_record(&self, r: &XrefRecord, buf: &mut Vec<u8>) {
+    fn write_record(&self, r: &XrefRecord<'_>, buf: &mut Vec<u8>) {
         // Quote the string field to handle commas, quotes, newlines in content.
         let string_field = match &r.rust_string {
             Some(s) => {
@@ -253,15 +316,19 @@ impl Printer for CsvPrinter {
             }
             None => String::new(),
         };
-        let _ = writeln!(
+        let _ = write!(
             buf,
-            "{:#x},{:#x},{},{},{}",
+            "{:#x},{:#x},{},{},{},",
             r.from,
             r.to,
             r.kind.name(),
             r.confidence.name(),
             string_field,
         );
+        write_csv_names(r.from_names, buf);
+        buf.push(b',');
+        write_csv_names(r.to_names, buf);
+        buf.push(b'\n');
     }
 }
 
@@ -270,6 +337,104 @@ impl Printer for CsvPrinter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn boxed(names: &[&str]) -> Vec<Box<str>> {
+        names.iter().map(|&n| n.into()).collect()
+    }
+
+    fn record<'a>(from_names: &'a [Box<str>], to_names: &'a [Box<str>]) -> XrefRecord<'a> {
+        XrefRecord {
+            from: Va::new(0x1000),
+            to: Va::new(0x2000),
+            kind: XrefKind::Call,
+            confidence: Confidence::PairResolved,
+            context: None,
+            rust_string: None,
+            from_names,
+            to_names,
+        }
+    }
+
+    fn render(p: &dyn Printer, r: &XrefRecord<'_>) -> String {
+        let mut buf = Vec::new();
+        p.write_record(r, &mut buf);
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn test_text_without_names() {
+        let s = render(&TextPrinter, &record(&[], &[]));
+        assert!(!s.contains('<'));
+        assert!(s.starts_with("0x"), "{s:?}");
+        assert!(s.contains("1000 -> ") && s.contains("2000  call"), "{s:?}");
+        assert!(s.ends_with("  call  [pair-resolved]\n"), "{s:?}");
+    }
+
+    #[test]
+    fn test_text_with_names() {
+        let (f, t) = (boxed(&["a", "b"]), boxed(&["c"]));
+        let s = render(&TextPrinter, &record(&f, &t));
+        assert!(s.contains("1000 <a|b> -> "), "{s:?}");
+        assert!(s.contains("2000 <c>  call"), "{s:?}");
+        // Only one side named: no stray brackets on the other.
+        let s = render(&TextPrinter, &record(&[], &t));
+        assert!(s.contains("1000 -> "), "{s:?}");
+        assert!(s.contains("2000 <c>  call"), "{s:?}");
+    }
+
+    #[test]
+    fn test_text_names_escape_control_chars() {
+        let f = boxed(&["a\nb"]);
+        let s = render(&TextPrinter, &record(&f, &[]));
+        assert!(s.contains("<a\\nb>"), "{s:?}");
+        assert_eq!(s.matches('\n').count(), 1);
+    }
+
+    #[test]
+    fn test_jsonl_without_names_omits_fields() {
+        let s = render(&JsonlPrinter, &record(&[], &[]));
+        assert!(!s.contains("names"), "{s}");
+    }
+
+    #[test]
+    fn test_jsonl_with_names() {
+        let (f, t) = (boxed(&["a", "b"]), boxed(&["c"]));
+        let s = render(&JsonlPrinter, &record(&f, &t));
+        assert!(s.contains("\"from_names\":[\"a\",\"b\"]"), "{s}");
+        assert!(s.contains("\"to_names\":[\"c\"]"), "{s}");
+        let s = render(&JsonlPrinter, &record(&[], &t));
+        assert!(!s.contains("from_names") && s.contains("to_names"), "{s}");
+    }
+
+    #[test]
+    fn test_csv_header_and_no_names() {
+        assert_eq!(
+            CsvPrinter.header_bytes(),
+            b"from,to,kind,confidence,string,from_names,to_names\n"
+        );
+        let s = render(&CsvPrinter, &record(&[], &[]));
+        assert_eq!(s, "0x1000,0x2000,call,pair-resolved,,,\n");
+    }
+
+    #[test]
+    fn test_csv_with_names() {
+        let (f, t) = (boxed(&["a", "b"]), boxed(&["c"]));
+        let s = render(&CsvPrinter, &record(&f, &t));
+        assert_eq!(s, "0x1000,0x2000,call,pair-resolved,,a|b,c\n");
+    }
+
+    #[test]
+    fn test_csv_names_quoting() {
+        let f = boxed(&["a,b", "q\"x"]);
+        let t = boxed(&["n\nl"]);
+        let mut r = record(&f, &t);
+        r.rust_string = Some("s".into());
+        let s = render(&CsvPrinter, &r);
+        assert_eq!(
+            s,
+            "0x1000,0x2000,call,pair-resolved,\"s\",\"a,b|q\"\"x\",\"n\\nl\"\n"
+        );
+    }
 
     #[test]
     fn test_truncate_middle_no_truncation_needed() {
