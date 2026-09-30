@@ -1,0 +1,9 @@
+#!/bin/sh
+# Enable with: git config core.hooksPath .githooks
+set -e
+
+cargo fmt --all -- --check || {
+    echo "pre-commit: rustfmt differences found; run 'cargo fmt' and re-stage." >&2
+    exit 1
+}
+cargo clippy --workspace --all-targets -- -D warnings
