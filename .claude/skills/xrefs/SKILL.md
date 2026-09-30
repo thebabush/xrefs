@@ -5,7 +5,7 @@ description: Find cross-references (callers, callees, data references) in native
 
 # xr — Binary Cross-Reference Tool
 
-`xr` is a fast, multi-threaded cross-reference scanner for native binaries. It extracts caller→callee edges and data references directly from machine code — no debug info or symbols required.
+`xr` is a fast, multi-threaded cross-reference scanner for native binaries. It extracts caller→callee edges and data references directly from machine code — no debug info or symbols required. Where symbols or import tables exist, names are printed next to addresses.
 
 Install with `cargo install --path .` from the repo root, or run directly via `cargo run --release --`.
 
@@ -49,6 +49,7 @@ xr [OPTIONS] <BINARY>
   --rust                  Extract Rust string literals from data_ptr xrefs
   --rust-min-blob N       Min UTF-8 blob size in bytes (default: 16)
   --rust-string-max N     Max display width for strings; 0 = no limit (default: 100)
+  --no-names              Do not print symbol names (on by default)
 ```
 
 VAs accept `0x`-prefixed hex or plain decimal.
@@ -184,6 +185,10 @@ Or use text format for human-readable hex output.
 0x0000000000401234 -> 0x0000000000403000  call  [linear-immediate]
 ```
 With `-B`/`-A`, indented disasm lines follow each xref entry.
+Names defined at exactly the `from`/`to` VA are shown as `<a|b>` after the address (omitted when there are none):
+```
+0x000000000046f1a9 -> 0x000000000041f3c0 <ERR_new>  call  [linear-immediate]
+```
 With `--rust`, resolved strings are appended inline:
 ```
 0x00000001002b4b68 -> 0x00000001002744d2  data_ptr  [byte-scan]  "failed to write the buffered data"
@@ -195,9 +200,15 @@ With `--rust`, resolved strings are appended inline:
 ```
 With `-B`/`-A`, each object gains a `"context"` array of `{va, hex, text, focus}`.
 With `--rust`, matching records gain a `"string"` field.
+Records gain `"from_names"` / `"to_names"` string arrays when names exist (omitted when empty):
+```
+{"from":4622960,"to":4322240,"kind":"call","confidence":"linear-immediate","to_names":["ERR_new"]}
+```
 
-**csv**: `from,to,kind,confidence,string` per line — no context even with `-B`/`-A`.
-The `string` column is populated when `--rust` is active.
+**csv**: `from,to,kind,confidence,string,from_names,to_names` per line — no context even with `-B`/`-A`.
+The `string` column is populated when `--rust` is active. `from_names`/`to_names` join multiple names with `|` and are empty when there is none. Columns 1-2 (`from`, `to`) are unchanged, so `awk -F,` on them still works.
+
+**Names**: raw symbol names (no demangling; Mach-O keeps the leading `_`), exact-VA only — an address inside a function has no name, and there is no `sub_XXXX` fallback. Sources: ELF symtab/dynsym/GOT/PLT stubs, PE exports and IAT (`Func@DLL`), Mach-O symtab/binds/stubs. Stripped binaries get import/dynamic names only. Not covered: threaded binds, PE delay-load, IRELATIVE PLT stubs, dyld cache beyond its own symbols. Use `--no-names` for the old output (e.g. when parsing text lines with a strict regex) or to skip the lookups.
 
 ## Analysis depth (`-d`)
 
@@ -218,6 +229,7 @@ The `string` column is populated when `--rust` is active.
 
 ## Tips
 
+- **Names in text output**: with names on, a text line can have `<...>` after either address. Use `--no-names` before parsing text with fixed-column tools, or prefer `-f jsonl`.
 - **Start narrow**: pin a target with `--ref-start`/`--ref-end` rather than scanning everything and post-filtering.
 - **Disasm context** (`-B`/`-A`) is anchor-decoded from the exact xref VA — no alignment drift. It replaces `objdump -d | sed -n '/addr/,+N p'` workflows.
 - **Fat Mach-O**: if `xr` rejects the binary, run `lipo -extract arm64 binary thin` first.

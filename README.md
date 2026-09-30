@@ -73,6 +73,40 @@ $ xr target/release/my_app --rust -k data_ptr
 0x00000001002b5e10 -> 0x000000010022e8c2  data_ptr  [byte-scan]  "src/arch/x86_64.rs"
 ```
 
+## Symbolic Names
+
+By default each xref's `from` and `to` show the name(s) defined at exactly that
+address. Pass `--no-names` to turn this off.
+
+```
+$ xr testcases/libssl3-amd64.so.3 -k call
+0x000000000046f1a9 -> 0x000000000041f3c0 <ERR_new>  call  [linear-immediate]
+0x0000000000421000 <gettimeofday> -> 0x00000000004a4b30 <gettimeofday>  jump  [linear-immediate]
+```
+
+JSONL adds `from_names` / `to_names` string arrays, omitted when empty:
+```
+{"from":4622960,"to":4322240,"kind":"call","confidence":"linear-immediate","to_names":["ERR_new"]}
+```
+
+CSV gets trailing `from_names,to_names` columns. Multiple names at one address
+are joined with `|` (text: `<a|b>`).
+
+- Names are raw: no demangling, Mach-O leading underscores are kept, versioned
+  ELF dynsym names appear as stored, control characters are escaped in text
+  output.
+- Exact-VA lookup only: an address inside a function gets no name (no `+off`),
+  and there is no `sub_XXXX` fallback.
+- Sources: ELF `.symtab`, defined `.dynsym`, GOT slots (GLOB_DAT/JUMP_SLOT
+  relocs) and PLT stubs (x86-64, AArch64, ARM32); PE named exports and IAT slots
+  (`Func@DLL`, `#ordinal@DLL`); Mach-O `.symtab`, bind slots (chained fixups and
+  dyld-info bind/lazy/weak opcodes) and `__stubs`/`__auth_stubs`. Stripped
+  binaries only get import/dynamic names, not local functions.
+- Not covered: threaded binds, PE delay-load imports, IRELATIVE PLT stubs,
+  ELFs with stripped section headers, GNU-ld 12-byte ARM32 PLT and Thumb PLT.
+  PE32 and PE ordinal imports are untested on real binaries. dyld shared caches
+  get only the names their symbols provide.
+
 ## Analysis Depths
 
 | Flag | Name | What it does |
@@ -124,6 +158,7 @@ OPTIONS:
         --rust                  Extract Rust string literals from data_ptr xrefs
         --rust-min-blob <N>     Min UTF-8 blob size in bytes [default: 16]
         --rust-string-max <N>   Max display width for strings (0 = unlimited) [default: 100]
+        --no-names              Do not print symbol names for xref addresses
 ```
 
 ## Benchmarking

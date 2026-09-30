@@ -122,6 +122,20 @@ Relocation tables are parsed to extract authoritative pointer pairs:
 These are emitted as `DataPointer` xrefs and bypass `min_ref_va` filtering
 (authoritative metadata, not heuristic).
 
+### Symbolic names
+
+`NameTable` (`src/names.rs`) is a VA-sorted multimap built after loading from
+`LoadedBinary.symbols` plus loader-specific extra names, and queried per xref
+endpoint by exact VA. Printers emit `<a|b>` (text), `from_names`/`to_names`
+(jsonl, csv). Disabled with `--no-names`.
+- **ELF**: `.symtab`, defined `.dynsym`, GOT slots (GLOB_DAT/JUMP_SLOT), PLT
+  stubs (x86-64, AArch64, ARM32)
+- **PE**: named exports, IAT slots as `Func@DLL` / `#ordinal@DLL`
+- **Mach-O**: `.symtab`, bind slots (chained fixups, dyld-info opcodes),
+  `__stubs`/`__auth_stubs` via the indirect symbol table
+
+Known gaps are listed in `docs/TODO.md`.
+
 ### Jump table recovery
 
 **x86-64**: Recognises `CMP+JA+LEA+MOVSXD+ADD+JMP` pattern. Reads i32
@@ -145,6 +159,7 @@ src/
   shard.rs                       ← split_range: parallel shard boundaries
   pass.rs                        ← XrefPass: orchestrates parallel scan
   disasm.rs                      ← disassembly context for -A/-B output
+  names.rs                       ← NameTable: exact-VA symbol name lookup
   output.rs                      ← Printer trait, text/json/csv formatters
   loader/
     mod.rs                       ← Segment, LoadedBinary, shared types, dispatch

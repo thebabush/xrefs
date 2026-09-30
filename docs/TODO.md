@@ -5,7 +5,9 @@
 - [ ] No GOT/IAT map for Mach-O binaries. `parse_macho` returns empty
   `got_slots`, so indirect `BLR Xn` / `CALL [RIP+got]` xrefs to extern
   symbols are never resolved for Mach-O. Needs `__got`/`__la_symbol_ptr`
-  parsing.
+  parsing. (Symbolic names for Mach-O bind slots and stubs are built
+  separately and do work; see `build_macho_bind_names` /
+  `build_macho_stub_names`.)
   (`src/loader/macho.rs`)
 
 - [ ] `build_elf_got_slots` is missing x86 (32-bit) relocation types
@@ -32,6 +34,25 @@
   `arm64_scan.rs` (linear + ADRP pair scanner) and `arm64_jump_table.rs`
   (jump table recovery) once a natural seam presents itself.
   (`src/arch/arm64.rs`)
+
+## Symbolic names
+
+- [ ] `build_pe_iat_slots` inserts `image_base + import.rva`, but goblin's
+  `Import.rva` is the hint/name entry (0 for ordinal imports); the real IAT
+  slot is `Import.offset`. Fixing it changes `got_slots` and therefore
+  scanner output, so run the benchmark before and after.
+  (`src/loader/pe.rs`)
+
+- [ ] Untested or unsupported name sources: threaded binds (Mach-O); PE
+  delay-load imports; PE32 and PE ordinal imports (untested on real
+  binaries); GNU-ld 12-byte ARM32 PLT and Thumb PLT; IRELATIVE PLT stubs;
+  ELFs with stripped section headers. dyld shared caches only get the names
+  their symbols provide.
+  (`src/loader/elf.rs`, `src/loader/pe.rs`, `src/loader/macho.rs`)
+
+- [ ] Optional: containing-symbol lookup (`name+0xoff`) for addresses inside
+  a function. Names are currently exact-VA only.
+  (`src/names.rs`)
 
 ## Performance
 
