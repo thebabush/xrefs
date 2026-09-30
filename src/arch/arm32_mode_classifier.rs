@@ -48,7 +48,6 @@ pub fn predict_mode(section: &[u8], offset: usize) -> ArmMode {
     // b3 = MSB of current word  (ARM32 condition code / Thumb second-halfword high byte)
     // b7 = MSB of next word     (run confirmation)
     match b3 {
-
         // ── 0x00 ─────────────────────────────────────────────────────────────
         // ARM32 EQ-condition instructions (cond = 0x0) are vanishingly rare in
         // real code; the 0x00 MSB slot is almost entirely data or specific
@@ -60,21 +59,37 @@ pub fn predict_mode(section: &[u8], offset: usize) -> ArmMode {
                 if b2 <= 0x3F {
                     Data
                 } else if b2 <= 0x97 {
-                    if b7 > 0x4F && b0 <= 0x23 { Thumb } else { Data }
-                } else if b7 > 0x06 && b1 > 0x1D { Thumb } else { Data }
+                    if b7 > 0x4F && b0 <= 0x23 {
+                        Thumb
+                    } else {
+                        Data
+                    }
+                } else if b7 > 0x06 && b1 > 0x1D {
+                    Thumb
+                } else {
+                    Data
+                }
             } else {
                 // b1 in 0xE8..=0xFF — Thumb-2 32-bit first-halfword opener territory.
                 if b7 == 0 {
                     // Next word also zero: narrow path for LDRD / load-multiple where
                     // the second halfword happens to start with 0x00.
-                    if b1 == 0xE8 && b5 > 0xE7 && b4 > 0x81 { Thumb } else { Data }
-                } else if b1 <= 0xF8 {
-                    if (b5 > 0xE9 && b6 <= 0xFC) || (b1 == 0xF8 && b5 <= 0xE9) {
-                        Thumb                          // Thumb-2 LDRD / LDM (94 %)
+                    if b1 == 0xE8 && b5 > 0xE7 && b4 > 0x81 {
+                        Thumb
                     } else {
                         Data
                     }
-                } else if b0 <= 0x0B { Thumb } else { Data }
+                } else if b1 <= 0xF8 {
+                    if (b5 > 0xE9 && b6 <= 0xFC) || (b1 == 0xF8 && b5 <= 0xE9) {
+                        Thumb // Thumb-2 LDRD / LDM (94 %)
+                    } else {
+                        Data
+                    }
+                } else if b0 <= 0x0B {
+                    Thumb
+                } else {
+                    Data
+                }
             }
         }
 
@@ -89,27 +104,51 @@ pub fn predict_mode(section: &[u8], offset: usize) -> ArmMode {
                 if b7 <= 0xD9 {
                     // Next word is also not in the unconditional ARM32 range.
                     if b5 <= 0x17 {
-                        if b7 > 0x09 { Arm32 } else { Data }
-                    } else if b0 > 0x11 { Thumb } else { Data }
+                        if b7 > 0x09 {
+                            Arm32
+                        } else {
+                            Data
+                        }
+                    } else if b0 > 0x11 {
+                        Thumb
+                    } else {
+                        Data
+                    }
                 } else if b7 <= 0xEB {
                     // b7 in 0xDA..=0xEB: next word IS an unconditional ARM32 word.
                     // A conditional ARM32 instruction followed by an AL-condition one
                     // confirms we are in an ARM32 code run.
-                    if b2 <= 0xD2 { Arm32 } else { Data }
-                } else if b2 == 0x00 { Arm32 } else { Thumb }
+                    if b2 <= 0xD2 {
+                        Arm32
+                    } else {
+                        Data
+                    }
+                } else if b2 == 0x00 {
+                    Arm32
+                } else {
+                    Thumb
+                }
             } else {
                 // b1 in 0x17..=0xFF — bulk of the Thumb instruction space.
                 if b2 <= 0xFE {
                     if b5 == 0x00 {
                         // Very specific ARM32 conditional encoding (88 %).
-                        if b0 <= 0x10 { Arm32 } else { Data }
+                        if b0 <= 0x10 {
+                            Arm32
+                        } else {
+                            Data
+                        }
                     } else {
                         Thumb
                     }
                 } else {
                     // b2 == 0xFF: only a handful of ARM32 encodings reach here.
                     if b1 <= 0xF6 {
-                        if b3 <= 0x1B { Arm32 } else { Thumb }
+                        if b3 <= 0x1B {
+                            Arm32
+                        } else {
+                            Thumb
+                        }
                     } else {
                         Arm32 // b1 in 0xF7..=0xFF with b2=0xFF → ARM32 (86–100 %)
                     }
@@ -126,7 +165,11 @@ pub fn predict_mode(section: &[u8], offset: usize) -> ArmMode {
                 // b3 in 0xE0..=0xE5 — data-processing, load/store, PUSH/POP (STMDB/LDMIA).
                 // Very strong ARM32 signal; only bail if next word's MSB is unusually
                 // high (> 0xF4), which suggests a Thumb-2 second halfword in b7.
-                if b7 <= 0xF4 { Arm32 } else { Thumb }
+                if b7 <= 0xF4 {
+                    Arm32
+                } else {
+                    Thumb
+                }
             } else {
                 // b3 in 0xE6..=0xEB — branch (B/BL), load/store-register, coprocessor-adjacent.
                 // Confirm with the next word: a run of 0xE? MSBs = ARM32.
@@ -166,7 +209,11 @@ pub fn predict_mode(section: &[u8], offset: usize) -> ArmMode {
             } else {
                 // Isolated high MSB — no run → Thumb second halfword.
                 // Rare exception: b6 == 0xFF triggers an ARM32 leaf (59 %, low conf).
-                if b6 == 0xFF { Arm32 } else { Thumb }
+                if b6 == 0xFF {
+                    Arm32
+                } else {
+                    Thumb
+                }
             }
         }
 
@@ -194,13 +241,18 @@ pub fn predict_mode(section: &[u8], offset: usize) -> ArmMode {
 pub struct ModePredictor {
     current: Option<ArmMode>,
     pending: Option<ArmMode>,
-    run:     u8,
-    h:       u8,
+    run: u8,
+    h: u8,
 }
 
 impl ModePredictor {
     pub fn new(hysteresis: u8) -> Self {
-        Self { current: None, pending: None, run: 0, h: hysteresis }
+        Self {
+            current: None,
+            pending: None,
+            run: 0,
+            h: hysteresis,
+        }
     }
 
     /// Feed one raw prediction; returns the stable mode (if locked).
@@ -211,16 +263,16 @@ impl ModePredictor {
                 if self.run >= self.h {
                     self.current = Some(raw);
                     self.pending = None;
-                    self.run     = 0;
+                    self.run = 0;
                 }
             }
             _ => {
                 self.pending = Some(raw);
-                self.run     = 1;
+                self.run = 1;
                 if self.run >= self.h {
                     self.current = Some(raw);
                     self.pending = None;
-                    self.run     = 0;
+                    self.run = 0;
                 }
             }
         }
@@ -238,8 +290,7 @@ mod tests {
         // E3A01002 = MOV r1, #2
         // LE bytes: [0x01,0x00,0xA0,0xE3, 0x02,0x10,0xA0,0xE3]
         //           b3=0xE3 (0xE0..=0xEB arm32 range), b7=0xE3 → run → Arm32
-        let code: &[u8] = &[0x01, 0x00, 0xA0, 0xE3,
-                             0x02, 0x10, 0xA0, 0xE3];
+        let code: &[u8] = &[0x01, 0x00, 0xA0, 0xE3, 0x02, 0x10, 0xA0, 0xE3];
         assert_eq!(predict_mode(code, 0), ArmMode::Arm32);
     }
 
@@ -249,8 +300,7 @@ mod tests {
         // E24DD010 = SUB   r13, r13, #16
         // LE bytes: [0x10,0x48,0x2D,0xE9, 0x10,0xD0,0x4D,0xE2]
         //           b3=0xE9 (0xE6..=0xEB), b7=0xE2 (in 0xE0..=0xEB) → run → Arm32
-        let code: &[u8] = &[0x10, 0x48, 0x2D, 0xE9,
-                             0x10, 0xD0, 0x4D, 0xE2];
+        let code: &[u8] = &[0x10, 0x48, 0x2D, 0xE9, 0x10, 0xD0, 0x4D, 0xE2];
         assert_eq!(predict_mode(code, 0), ArmMode::Arm32);
     }
 
@@ -263,8 +313,7 @@ mod tests {
         //   bytes 0..3: [0x10,0xB5, 0xC0,0x46]  b3=0x46 (0x01..=0xDF)
         //   bytes 4..7: [0x00,0xF0, 0xXX,0xFA]  b7=0xFA
         // b3 in 0x01..=0xDF, b1=0xB5 > 0x16, b2=0xC0 <= 0xFE, b5=0xF0 > 0 → Thumb
-        let code: &[u8] = &[0x10, 0xB5, 0xC0, 0x46,
-                             0x00, 0xF0, 0x10, 0xFA];
+        let code: &[u8] = &[0x10, 0xB5, 0xC0, 0x46, 0x00, 0xF0, 0x10, 0xFA];
         assert_eq!(predict_mode(code, 0), ArmMode::Thumb);
     }
 
@@ -275,8 +324,7 @@ mod tests {
         // → 4 bytes: [0x2D,0xE9,0x10,0x48]  b3=0x48
         // next word: Thumb-2 SUB.W sp,sp,#16 = 0xB082 → [0x82,0xB0,0xC0,0x46]
         // b3=0x48 in 0x01..=0xDF, b1=0xE9 > 0x16, b5=0xB0 > 0 → Thumb
-        let code: &[u8] = &[0x2D, 0xE9, 0x10, 0x48,
-                             0x82, 0xB0, 0xC0, 0x46];
+        let code: &[u8] = &[0x2D, 0xE9, 0x10, 0x48, 0x82, 0xB0, 0xC0, 0x46];
         assert_eq!(predict_mode(code, 0), ArmMode::Thumb);
     }
 
@@ -286,8 +334,7 @@ mod tests {
         // F3C86A32 = VEXT.8   q3, q4, q2, #2
         // LE: [0x10,0x01,0x43,0xF2, 0x32,0x6A,0xC8,0xF3]
         //      b3=0xF2 (0xEC..=0xFE), b7=0xF3 (>= 0xE0) → NEON run, b3<=0xF4 → Arm32
-        let code: &[u8] = &[0x10, 0x01, 0x43, 0xF2,
-                             0x32, 0x6A, 0xC8, 0xF3];
+        let code: &[u8] = &[0x10, 0x01, 0x43, 0xF2, 0x32, 0x6A, 0xC8, 0xF3];
         assert_eq!(predict_mode(code, 0), ArmMode::Arm32);
     }
 
@@ -296,8 +343,7 @@ mod tests {
         // Single NEON word followed by a low-MSB Thumb word:
         // the model correctly treats the isolated 0xF? as a Thumb second halfword.
         // b3=0xF2, b7=0x46 (low, < 0xE0) → Thumb
-        let code: &[u8] = &[0x10, 0x01, 0x43, 0xF2,
-                             0x10, 0xB5, 0xC0, 0x46];
+        let code: &[u8] = &[0x10, 0x01, 0x43, 0xF2, 0x10, 0xB5, 0xC0, 0x46];
         assert_eq!(predict_mode(code, 0), ArmMode::Thumb);
     }
 

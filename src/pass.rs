@@ -550,7 +550,11 @@ fn seg_bytes_in_range(seg: &Segment, from_range: Option<VaRange>) -> u64 {
         Some(r) => {
             let start = seg.va.max(r.start);
             let end = Va::new(seg_end.raw().min(r.end.raw()));
-            if start >= end { 0 } else { end - start }
+            if start >= end {
+                0
+            } else {
+                end - start
+            }
         }
     }
 }
@@ -618,9 +622,7 @@ fn scan_arm32_shard(seg: &Segment, start_va: Va, end_va: Va, ctx: &ScanCtx<'_>) 
                 false,
                 "scan_arm32_shard: segment '{}' at {:#x} has {:?}, expected Arm32; \
                  skipping (no xrefs produced)",
-                seg.name,
-                seg.va,
-                seg.arch,
+                seg.name, seg.va, seg.arch,
             );
             return vec![];
         }
@@ -644,8 +646,8 @@ fn scan_arm32_shard(seg: &Segment, start_va: Va, end_va: Va, ctx: &ScanCtx<'_>) 
     }
 
     // General path: iterate over sub-ranges separated by ISA transitions.
-    let mut xrefs    = Vec::new();
-    let mut cur_va   = start_va;
+    let mut xrefs = Vec::new();
+    let mut cur_va = start_va;
     let mut cur_mode = initial_mode;
 
     for sw in inner {
@@ -657,7 +659,7 @@ fn scan_arm32_shard(seg: &Segment, start_va: Va, end_va: Va, ctx: &ScanCtx<'_>) 
             };
             xrefs.extend(batch);
         }
-        cur_va   = sw.va;
+        cur_va = sw.va;
         cur_mode = sw.mode;
     }
 

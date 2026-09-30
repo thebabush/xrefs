@@ -377,12 +377,18 @@ fn check_agreement(_word: u32, ours: &Arm64Insn, insn: &bad64::Instruction) -> O
                 // bad64 reports the raw imm12 without applying the shift field;
                 // our add_imm() applies LSL #12 when shift=01.  Extract the raw
                 // word to determine the shift and compute the expected value.
-                let word = match ours { Arm64Insn::AddImm(w) => *w, _ => unreachable!() };
+                let word = match ours {
+                    Arm64Insn::AddImm(w) => *w,
+                    _ => unreachable!(),
+                };
                 let shift = (word >> 22) & 0x3;
                 let expected = if shift == 1 { bad_imm << 12 } else { bad_imm };
                 let our_imm = ours.add_imm();
                 if expected != our_imm {
-                    return Some(format!("ADD imm: bad64={:#x} (shift={}) expected={:#x} ours={:#x}", bad_imm, shift, expected, our_imm));
+                    return Some(format!(
+                        "ADD imm: bad64={:#x} (shift={}) expected={:#x} ours={:#x}",
+                        bad_imm, shift, expected, our_imm
+                    ));
                 }
                 // Rd
                 if let Some(bad_rd) = bad64_reg(ops.first()) {

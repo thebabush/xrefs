@@ -33,7 +33,7 @@ pub struct RelocPointer {
 #[derive(Clone, Debug)]
 pub struct Symbol {
     pub name: String,
-    pub va:   Va,
+    pub va: Va,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +102,10 @@ pub struct Arm32Segment {
 impl Arm32Segment {
     /// Construct a homogeneous segment — one mode throughout, no switches.
     pub fn uniform(mode: DecodeMode) -> Self {
-        Self { default_mode: mode, switches: vec![] }
+        Self {
+            default_mode: mode,
+            switches: vec![],
+        }
     }
 
     /// Return the decode mode in effect at `va`.
@@ -111,7 +114,11 @@ impl Arm32Segment {
     /// falls back to [`default_mode`](Self::default_mode) if none precedes it.
     pub fn mode_at(&self, va: Va) -> DecodeMode {
         let idx = self.switches.partition_point(|s| s.va <= va);
-        if idx == 0 { self.default_mode } else { self.switches[idx - 1].mode }
+        if idx == 0 {
+            self.default_mode
+        } else {
+            self.switches[idx - 1].mode
+        }
     }
 }
 
@@ -418,7 +425,11 @@ impl LoadedBinary {
             return None;
         }
         let seg = &self.segments[idx - 1];
-        if seg.contains(va) { Some(seg) } else { None }
+        if seg.contains(va) {
+            Some(seg)
+        } else {
+            None
+        }
     }
 
     /// True if the given VA is in any mapped segment.

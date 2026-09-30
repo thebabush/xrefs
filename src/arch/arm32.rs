@@ -50,7 +50,7 @@
 //! State is cleared on: a new `LDR Rt` (overwrite), unconditional `B T2`
 //! (function boundary), and `BL`/`BLX` (clears R0–R3 per ARM ABI).
 
-use crate::arch::{SegmentIndex, ScanRegion};
+use crate::arch::{ScanRegion, SegmentIndex};
 use crate::va::Va;
 use crate::xref::{Confidence, Xref, XrefKind};
 
@@ -114,10 +114,7 @@ pub(crate) fn scan_arm32(region: &ScanRegion, seg_idx: &SegmentIndex) -> Vec<Xre
         // `cond 0000_1000_1111_Rd 0000_0000_Rd` — consumes LDR state.
         // Mask  0x0FFF_0FF0 == 0x008F_0000; bits[15:12] == bits[3:0] == Rd.
         let rd_bits = (word >> 12) & 0xF;
-        if (word & 0x0FFF_0FF0) == 0x008F_0000
-            && rd_bits == (word & 0xF)
-            && rd_bits != 15
-        {
+        if (word & 0x0FFF_0FF0) == 0x008F_0000 && rd_bits == (word & 0xF) && rd_bits != 15 {
             let rd = rd_bits as usize;
             if let Some(st) = ldr_st[rd].take() {
                 // PC of ADD = add_va + 8 (A32 mode).
@@ -227,12 +224,7 @@ fn a32_signext24(imm24: u32) -> i64 {
 /// Emit DataPointer xrefs from all three addresses that IDA records for a
 /// resolved LDR+ADD PC pair: LDR instruction, ADD instruction, and pool word.
 #[inline]
-fn emit_ldr_add_pair(
-    xrefs: &mut Vec<Xref>,
-    st: LdrState,
-    add_va: Va,
-    seg_idx: &SegmentIndex,
-) {
+fn emit_ldr_add_pair(xrefs: &mut Vec<Xref>, st: LdrState, add_va: Va, seg_idx: &SegmentIndex) {
     // PC of the ADD instruction = ADD_va + 4 (Thumb: inst + 4).
     // Use 32-bit wrapping: pool_word is a signed PC-relative offset that may
     // be negative (target below ADD).  u64 arithmetic would silently produce
@@ -255,11 +247,7 @@ fn emit_ldr_add_pair(
 /// passed through for future use (currently the LDR+ADD pair resolution
 /// is pie-base-agnostic because the ADD PC operand already carries the
 /// rebased address).
-pub(crate) fn scan_thumb(
-    region: &ScanRegion,
-    seg_idx: &SegmentIndex,
-    _pie_base: u64,
-) -> Vec<Xref> {
+pub(crate) fn scan_thumb(region: &ScanRegion, seg_idx: &SegmentIndex, _pie_base: u64) -> Vec<Xref> {
     let data = region.data;
     let base = region.base_va;
     let mut xrefs = Vec::new();
@@ -295,7 +283,8 @@ pub(crate) fn scan_thumb(
             if i + 3 >= data.len() {
                 break;
             }
-            let hw2 = u16::from_le_bytes(data[i + 2..i + 4].try_into().expect("4-byte 32-bit insn"));
+            let hw2 =
+                u16::from_le_bytes(data[i + 2..i + 4].try_into().expect("4-byte 32-bit insn"));
             i += 4;
 
             if hw1 & 0xF800 == 0xF000 {
@@ -460,7 +449,11 @@ fn thumb_bl_target(pc: u64, hw1: u16, hw2: u16, is_blx: bool) -> u64 {
 
     let target = (pc as i64 + 4 + offset as i64) as u64;
     // BLX targets ARM32; bit[1] must be 0 (4-byte aligned).
-    if is_blx { target & !3u64 } else { target }
+    if is_blx {
+        target & !3u64
+    } else {
+        target
+    }
 }
 
 /// Compute B.cond.W (T3) target using the S:J2:J1:imm6:imm11:0 formula.
@@ -512,7 +505,9 @@ fn xref(from: Va, to: u64, kind: XrefKind) -> Xref {
 mod tests {
     use super::*;
     use crate::arch::SegmentIndex;
-    use crate::loader::{Arch, Arm32Segment, DecodeMode, LoadedBinary, SegData, Segment, SegmentArch};
+    use crate::loader::{
+        Arch, Arm32Segment, DecodeMode, LoadedBinary, SegData, Segment, SegmentArch,
+    };
     use crate::va::Va;
 
     fn make_exec_seg(va: u64, data: Vec<u8>) -> Segment {
@@ -592,10 +587,7 @@ mod tests {
     // ── Thumb-2 tests ─────────────────────────────────────────────────────────
 
     fn seg_thumb(va: u64, halfwords: &[u16]) -> Segment {
-        let bytes: Vec<u8> = halfwords
-            .iter()
-            .flat_map(|hw| hw.to_le_bytes())
-            .collect();
+        let bytes: Vec<u8> = halfwords.iter().flat_map(|hw| hw.to_le_bytes()).collect();
         let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         Segment {
             va: Va::new(va),

@@ -122,31 +122,30 @@ fn scan_core(
         // Propagation-only: resolve indirect call/jmp from tracked register state.
         if prop == PropMode::On {
             match insn.code() {
-                Code::Call_rm64 | Code::Jmp_rm64
-                    if insn.op0_kind() == OpKind::Register => {
-                        let reg = insn.op0_register();
-                        if let Some(ri) = gpr_index(reg) {
-                            if let Some(known) = reg_vals[ri] {
-                                if idx.contains(Va::new(known)) {
-                                    let kind = if insn.code() == Code::Call_rm64 {
-                                        XrefKind::Call
-                                    } else {
-                                        XrefKind::Jump
-                                    };
-                                    xrefs.push(Xref {
-                                        from: Va::new(va),
-                                        to: Va::new(known),
-                                        kind,
-                                        confidence: Confidence::LocalProp,
-                                    });
-                                }
-                            } else if insn.code() == Code::Jmp_rm64 {
-                                if let Some(jt) = jt_info[ri] {
-                                    recover_jump_table(Va::new(va), jt, data_idx, idx, &mut xrefs);
-                                }
+                Code::Call_rm64 | Code::Jmp_rm64 if insn.op0_kind() == OpKind::Register => {
+                    let reg = insn.op0_register();
+                    if let Some(ri) = gpr_index(reg) {
+                        if let Some(known) = reg_vals[ri] {
+                            if idx.contains(Va::new(known)) {
+                                let kind = if insn.code() == Code::Call_rm64 {
+                                    XrefKind::Call
+                                } else {
+                                    XrefKind::Jump
+                                };
+                                xrefs.push(Xref {
+                                    from: Va::new(va),
+                                    to: Va::new(known),
+                                    kind,
+                                    confidence: Confidence::LocalProp,
+                                });
+                            }
+                        } else if insn.code() == Code::Jmp_rm64 {
+                            if let Some(jt) = jt_info[ri] {
+                                recover_jump_table(Va::new(va), jt, data_idx, idx, &mut xrefs);
                             }
                         }
                     }
+                }
                 _ => {}
             }
         }
@@ -495,18 +494,17 @@ fn update_cmp_state(insn: &Instruction, cmp_bound: &mut [Option<u32>; 16]) {
                 }
             }
         }
-        Code::Cmp_rm64_imm8 | Code::Cmp_rm32_imm8
-            if insn.op0_kind() == OpKind::Register => {
-                if let Some(ri) = gpr_index(insn.op0_register()) {
-                    let imm = insn.immediate8() as u64;
-                    if imm < MAX_JUMP_TABLE_ENTRIES as u64 {
-                        cmp_bound[ri] = Some((imm + 1) as u32);
-                    } else {
-                        cmp_bound[ri] = None;
-                    }
-                    return;
+        Code::Cmp_rm64_imm8 | Code::Cmp_rm32_imm8 if insn.op0_kind() == OpKind::Register => {
+            if let Some(ri) = gpr_index(insn.op0_register()) {
+                let imm = insn.immediate8() as u64;
+                if imm < MAX_JUMP_TABLE_ENTRIES as u64 {
+                    cmp_bound[ri] = Some((imm + 1) as u32);
+                } else {
+                    cmp_bound[ri] = None;
                 }
+                return;
             }
+        }
         _ => {}
     }
 
@@ -622,10 +620,9 @@ fn update_prop_state(insn: &Instruction, vals: &mut [Option<u64>; 16]) {
             vals[dst_idx] = None;
         }
         // LEA r64, [rip+disp] — we know the value since RIP-relative is resolved
-        Code::Lea_r64_m
-            if insn.memory_base() == Register::RIP => {
-                vals[dst_idx] = Some(insn.memory_displacement64());
-            }
+        Code::Lea_r64_m if insn.memory_base() == Register::RIP => {
+            vals[dst_idx] = Some(insn.memory_displacement64());
+        }
         // Any other write — invalidate
         _ => {
             vals[dst_idx] = None;

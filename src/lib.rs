@@ -9,8 +9,10 @@ pub(crate) mod shard;
 pub mod va;
 pub mod xref;
 
-pub use loader::{Arch, Arm32Segment, DecodeMode, LoadedBinary, ModeSwitch, RelocPointer,
-                 Segment, SegmentArch, Symbol};
+pub use loader::{
+    Arch, Arm32Segment, DecodeMode, LoadedBinary, ModeSwitch, RelocPointer, Segment, SegmentArch,
+    Symbol,
+};
 pub use names::{NameTable, NameTableBuilder};
 pub use pass::{Depth, PassConfig, PassResult, XrefPass};
 pub use rust::{StringBlobIndex, DEFAULT_MIN_BLOB_LEN};

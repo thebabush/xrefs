@@ -726,7 +726,7 @@ fn scan_backward_for_pattern(br_index: usize, ctx: &JumpTableCtx) -> Option<Jump
     // ADRP+ADD resolution for the table register (self-contained).
     let mut adrp_page: Option<(Reg, u64)> = None; // (rd, page)
     let mut add_imm_val: Option<(Reg, u64)> = None; // (rd, imm) from ADD Xd, Xd, #imm
-    // CMP bound found in the backward scan.
+                                                    // CMP bound found in the backward scan.
     let mut cmp_bound: Option<(Reg, CmpBound)> = None;
 
     for back in 1..=lookback {

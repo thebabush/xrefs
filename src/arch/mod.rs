@@ -1,7 +1,7 @@
 pub mod arm32;
+pub(crate) mod arm32_mode_classifier;
 pub mod arm64;
 pub mod arm64_decode;
-pub(crate) mod arm32_mode_classifier;
 pub(crate) mod x86_64;
 
 use crate::loader::Segment;

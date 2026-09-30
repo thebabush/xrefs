@@ -363,9 +363,7 @@ fn main() -> Result<()> {
     }
 
     if extern_normalized > 0 {
-        println!(
-            "GOT normalize: {extern_normalized} IDA extern-target xrefs → GOT slot VAs"
-        );
+        println!("GOT normalize: {extern_normalized} IDA extern-target xrefs → GOT slot VAs");
     }
 
     if va_offset != 0 {
@@ -383,9 +381,7 @@ fn main() -> Result<()> {
     }
     println!();
 
-    let min_ref_va = Some(cli
-        .min_ref_va
-        .unwrap_or_else(|| binary.min_va()));
+    let min_ref_va = Some(cli.min_ref_va.unwrap_or_else(|| binary.min_va()));
     println!(
         "binary       : {}  arch={:?}  segments={}",
         cli.binary.display(),
@@ -514,7 +510,11 @@ fn main() -> Result<()> {
                                 }
                                 "unknown"
                             });
-                        DumpXref { from: f, to: t, kind }
+                        DumpXref {
+                            from: f,
+                            to: t,
+                            kind,
+                        }
                     })
                     .collect()
             };

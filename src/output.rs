@@ -309,9 +309,10 @@ impl Printer for CsvPrinter {
                 // Escape embedded newlines and carriage returns so a single xref
                 // always occupies exactly one CSV row.  Double-quotes are doubled
                 // per RFC 4180.
-                let escaped = s.replace('"', "\"\"")
-                               .replace('\n', "\\n")
-                               .replace('\r', "\\r");
+                let escaped = s
+                    .replace('"', "\"\"")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r");
                 format!("\"{}\"", escaped)
             }
             None => String::new(),

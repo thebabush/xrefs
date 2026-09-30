@@ -46,11 +46,8 @@ fn probe_arm32_section_mode(file: &[u8], offset: usize, size: usize) -> DecodeMo
 
     let arm32_votes = (0..n)
         .filter(|&i| {
-            let w = u32::from_le_bytes(
-                file[offset + i * 4..offset + i * 4 + 4]
-                    .try_into()
-                    .unwrap(),
-            );
+            let w =
+                u32::from_le_bytes(file[offset + i * 4..offset + i * 4 + 4].try_into().unwrap());
             w >> 28 == 0xE
         })
         .count();
@@ -150,7 +147,7 @@ pub(super) fn parse_elf(
     if arch == Arch::Arm32 {
         for si in &mut section_infos {
             let switches = classify_section_mode(bytes, si.file_offset, si.file_size, si.va, 2);
-            si.arm32_mode     = switches[0].1;
+            si.arm32_mode = switches[0].1;
             si.arm32_switches = switches.into_iter().skip(1).collect();
         }
     }
@@ -222,9 +219,13 @@ pub(super) fn parse_elf(
                         byte_scannable: sec.byte_scannable,
                         arch: if arch == Arch::Arm32 && sec.is_code {
                             let mut arm32 = Arm32Segment::uniform(sec.arm32_mode);
-                            arm32.switches = sec.arm32_switches
+                            arm32.switches = sec
+                                .arm32_switches
                                 .iter()
-                                .map(|&(va, mode)| ModeSwitch { va: Va::new(va), mode })
+                                .map(|&(va, mode)| ModeSwitch {
+                                    va: Va::new(va),
+                                    mode,
+                                })
                                 .collect();
                             SegmentArch::Arm32(arm32)
                         } else {
@@ -275,8 +276,13 @@ pub(super) fn parse_elf(
                         let switches = classify_section_mode(bytes, offset, filesz, ph_va, 2);
                         let default_mode = switches[0].1;
                         let mut arm32 = Arm32Segment::uniform(default_mode);
-                        arm32.switches = switches.into_iter().skip(1)
-                            .map(|(va, mode)| ModeSwitch { va: Va::new(va), mode })
+                        arm32.switches = switches
+                            .into_iter()
+                            .skip(1)
+                            .map(|(va, mode)| ModeSwitch {
+                                va: Va::new(va),
+                                mode,
+                            })
                             .collect();
                         SegmentArch::Arm32(arm32)
                     } else {
@@ -354,26 +360,26 @@ pub(super) fn parse_elf(
 /// When the classifier never locks (section too short or ambiguous), falls
 /// back to [`probe_arm32_section_mode`] so callers always get a result.
 fn classify_section_mode(
-    file:    &[u8],
-    offset:  usize,
-    size:    usize,
+    file: &[u8],
+    offset: usize,
+    size: usize,
     base_va: u64,
-    hyst:    u8,
+    hyst: u8,
 ) -> Vec<(u64, DecodeMode)> {
-    use crate::arch::arm32_mode_classifier::{ArmMode, ModePredictor, predict_mode};
+    use crate::arch::arm32_mode_classifier::{predict_mode, ArmMode, ModePredictor};
 
     if size < 4 || offset.saturating_add(size) > file.len() {
         return vec![(base_va, DecodeMode::Arm32)];
     }
 
     let data = &file[offset..offset + size];
-    let mut pred    = ModePredictor::new(hyst);
+    let mut pred = ModePredictor::new(hyst);
     let mut switches: Vec<(u64, DecodeMode)> = Vec::new();
-    let mut current: Option<DecodeMode>      = None;
+    let mut current: Option<DecodeMode> = None;
 
     for word_idx in 0..(size / 4) {
         let off = word_idx * 4;
-        let va  = base_va + off as u64;
+        let va = base_va + off as u64;
 
         let committed = pred.push(predict_mode(data, off));
 
@@ -421,7 +427,11 @@ fn build_elf_dynsym_pointers(elf: &goblin::elf::Elf, pie_base: u64) -> Vec<Reloc
     use goblin::elf::section_header::SHT_DYNSYM;
 
     // Locate .dynsym section header — present even in stripped binaries.
-    let dynsym_sh = match elf.section_headers.iter().find(|sh| sh.sh_type == SHT_DYNSYM) {
+    let dynsym_sh = match elf
+        .section_headers
+        .iter()
+        .find(|sh| sh.sh_type == SHT_DYNSYM)
+    {
         Some(sh) => sh,
         None => return vec![],
     };
@@ -722,10 +732,7 @@ fn build_elf_reloc_pointers(
     // Used to read the implicit in-place addend for ARM32 REL relocations.
     let vma_to_file = |vma: u64| -> Option<usize> {
         elf.program_headers.iter().find_map(|ph| {
-            if ph.p_type == PT_LOAD
-                && vma >= ph.p_vaddr
-                && vma < ph.p_vaddr + ph.p_filesz
-            {
+            if ph.p_type == PT_LOAD && vma >= ph.p_vaddr && vma < ph.p_vaddr + ph.p_filesz {
                 Some((vma - ph.p_vaddr + ph.p_offset) as usize)
             } else {
                 None
@@ -755,14 +762,20 @@ fn build_elf_reloc_pointers(
             // RELA: explicit addend encodes the pre-link target.
             let target = Va::new((rel.r_addend.unwrap_or(0) as u64).wrapping_add(pie_base));
             if is_mapped(target) {
-                result.push(RelocPointer { from: Va::new(from), to: target });
+                result.push(RelocPointer {
+                    from: Va::new(from),
+                    to: target,
+                });
             }
         } else if r_type == R_ARM_RELATIVE {
             // REL: the word at *place in the file IS the pre-link target VMA.
             if let Some(addend) = read_u32_at(rel.r_offset) {
                 let target = Va::new((addend as u64).wrapping_add(pie_base));
                 if is_mapped(target) {
-                    result.push(RelocPointer { from: Va::new(from), to: target });
+                    result.push(RelocPointer {
+                        from: Va::new(from),
+                        to: target,
+                    });
                 }
             }
         } else if (r_type == R_X86_64_64 || r_type == R_AARCH64_ABS64) && rel.r_sym != 0 {
@@ -779,7 +792,10 @@ fn build_elf_reloc_pointers(
                             .wrapping_add(rel.r_addend.unwrap_or(0) as u64),
                     );
                     if is_mapped(target) {
-                        result.push(RelocPointer { from: Va::new(from), to: target });
+                        result.push(RelocPointer {
+                            from: Va::new(from),
+                            to: target,
+                        });
                     }
                 }
             }
@@ -798,7 +814,10 @@ fn build_elf_reloc_pointers(
                             .wrapping_add(implicit_addend as u64),
                     );
                     if is_mapped(target) {
-                        result.push(RelocPointer { from: Va::new(from), to: target });
+                        result.push(RelocPointer {
+                            from: Va::new(from),
+                            to: target,
+                        });
                     }
                 }
             }

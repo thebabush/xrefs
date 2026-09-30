@@ -66,10 +66,16 @@ pub fn context(
 
 // ── x86 / x86-64 ─────────────────────────────────────────────────────────────
 
-fn disasm_x86(arch: Arch, seg: &Segment, focus_va: u64, before: usize, after: usize) -> Vec<DisasmLine> {
+fn disasm_x86(
+    arch: Arch,
+    seg: &Segment,
+    focus_va: u64,
+    before: usize,
+    after: usize,
+) -> Vec<DisasmLine> {
     use iced_x86::{
-        Decoder, DecoderOptions, Formatter, FormatterOutput, FormatterTextKind, IntelFormatter,
-        Instruction,
+        Decoder, DecoderOptions, Formatter, FormatterOutput, FormatterTextKind, Instruction,
+        IntelFormatter,
     };
 
     struct Buf(String);

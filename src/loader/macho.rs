@@ -474,7 +474,8 @@ fn build_macho_stub_names(bytes: &[u8], macho: &goblin::mach::MachO) -> Vec<Symb
         if idx >= symtab.nsyms {
             return None;
         }
-        let entry = (symtab.symoff as usize).checked_add((idx as usize).checked_mul(nlist_size)?)?;
+        let entry =
+            (symtab.symoff as usize).checked_add((idx as usize).checked_mul(nlist_size)?)?;
         let strx = rd32(entry)? as usize;
         if strx >= symtab.strsize as usize {
             return None;
@@ -819,14 +820,26 @@ mod tests {
         let names = ["_a", "_b", "", "_d"];
         let name_of = |i: u32| names.get(i as usize).map(|s| s.to_string());
         // table: [pad, 1, LOCAL, ABS, 2 (empty name), 99 (oob), 3, 0]
-        let ind = [7, 1, INDIRECT_SYMBOL_LOCAL, INDIRECT_SYMBOL_ABS, 2, 99, 3, 0];
+        let ind = [
+            7,
+            1,
+            INDIRECT_SYMBOL_LOCAL,
+            INDIRECT_SYMBOL_ABS,
+            2,
+            99,
+            3,
+            0,
+        ];
         let got = stub_entry_names(0x1000, 7, 12, 1, &ind, &name_of);
         let got: Vec<(String, u64)> = got.into_iter().map(|s| (s.name, s.va.raw())).collect();
-        assert_eq!(got, vec![
-            ("_b".to_string(), 0x1000),
-            ("_d".to_string(), 0x1000 + 5 * 12),
-            ("_a".to_string(), 0x1000 + 6 * 12),
-        ]);
+        assert_eq!(
+            got,
+            vec![
+                ("_b".to_string(), 0x1000),
+                ("_d".to_string(), 0x1000 + 5 * 12),
+                ("_a".to_string(), 0x1000 + 6 * 12),
+            ]
+        );
     }
 
     #[test]
@@ -836,7 +849,6 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert!(stub_entry_names(0x2000, 3, 6, usize::MAX, &[0], &name_of).is_empty());
     }
-
 
     const BASE: u64 = 0x1_0000_0000; // typical Mach-O __TEXT vmaddr
 

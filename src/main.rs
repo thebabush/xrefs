@@ -161,7 +161,6 @@ impl KindFilter {
     }
 }
 
-
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let depth = cli.depth;
@@ -173,8 +172,8 @@ fn main() -> Result<()> {
     if binary.arch == xr::Arch::Arm32 && cli.arm32_mode != Arm32Mode::Auto {
         let forced = match cli.arm32_mode {
             Arm32Mode::Thumb => xr::DecodeMode::Thumb,
-            Arm32Mode::Arm   => xr::DecodeMode::Arm32,
-            Arm32Mode::Auto  => unreachable!(),
+            Arm32Mode::Arm => xr::DecodeMode::Arm32,
+            Arm32Mode::Auto => unreachable!(),
         };
         for seg in &mut binary.segments {
             if let xr::SegmentArch::Arm32(ref mut a) = seg.arch {
@@ -322,7 +321,8 @@ fn main() -> Result<()> {
                     if x.kind.scored_kind() == XrefKind::DataPointer
                         && x.confidence == Confidence::ByteScan
                     {
-                        blobs.extract_rust_string(&binary, x.from, x.to)
+                        blobs
+                            .extract_rust_string(&binary, x.from, x.to)
                             .map(|s| truncate_middle(&s, cli.rust_string_max))
                     } else {
                         None
